@@ -148,6 +148,15 @@ void handleSerialInput() {
       menuObject.setup(appsInfo.getNamesList());
       currentMode = 0;
     }
+  }else if (command == "DIAG") {
+    int secondDelim = incomingMsg.indexOf('|', firstDelimiter + 1);
+    int thirdDelim  = incomingMsg.indexOf('|', secondDelim + 1);
+
+    String cpuStr = incomingMsg.substring(firstDelimiter + 5, secondDelim);
+    String ramStr = incomingMsg.substring(secondDelim + 5, thirdDelim);
+    String gpuStr = incomingMsg.substring(thirdDelim + 5);
+
+    diagnostics.updateHostStats(cpuStr.toInt(), ramStr.toInt(), gpuStr.toInt());
   }
 }
 
@@ -222,7 +231,7 @@ void loop() {
       // MEDIA CONTROL LOGIC (Sidebar Closed)
       else {
         int currentHover = mediaScreen.getSelection(); 
-        if (currentHover == 1) Serial.println("MEDIA_PREV");
+        if (currentHover == 1) Serial.println("MEDIA_PREVIOUS");
         else if (currentHover == 2) Serial.println("MEDIA_PLAY_PAUSE");
         else if (currentHover == 3) Serial.println("MEDIA_NEXT");
       }

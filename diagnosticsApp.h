@@ -24,13 +24,25 @@ class diagnosticsApp : public app {
     int boxH = 195;
 
   public:
+    int hostCPU = 0;
+    int hostRAM = 0;
+    int hostGPU = 0;
+    unsigned long lastHostUpdate = 0;
+
     // Implemented your exact inherited constructor
     diagnosticsApp(String name) : app(name) {}
+
+    void updateHostStats(int cpu, int ram, int gpu) {
+      hostCPU = cpu;
+      hostRAM = ram;
+      hostGPU = gpu;
+      lastHostUpdate = millis();
+    }
 
     void loadScreen() {
       currentTab = 0;
       
-      // FIX 1: Explicitly wipe the root physical screen before drawing our floating sprites
+      // Explicitly wipe the root physical screen before drawing our floating sprites
       tft.setSwapBytes(true);
       tft.pushImage(0, 0, 320, 240, mainBackground); 
       
@@ -38,13 +50,25 @@ class diagnosticsApp : public app {
     }
 
     void scroll(int buttonDirection) {
-      if (buttonDirection == 2) { // Left
-        if (currentTab > 0) currentTab--;
+      bool tabChanged = false;
+
+      if (buttonDirection == 0) { // LEFT
+        if (currentTab > 0) {
+          currentTab--;
+          tabChanged = true;
+        }
       } 
-      else if (buttonDirection == 3) { // Right
-        if (currentTab < 4) currentTab++;
+      else if (buttonDirection == 1) { // RIGHT
+        if (currentTab < 4) {
+          currentTab++;
+          tabChanged = true;
+        }
       }
-      render(); // Instantly update UI on scroll
+
+      if (tabChanged) {
+        renderHeader();
+        renderContent();
+      }
     }
 
     void run() {
@@ -56,11 +80,19 @@ class diagnosticsApp : public app {
     }
 
     void render() {
+      // Wipe the screen and redraw the main background first
+      tft.setSwapBytes(true);
+      tft.pushImage(0, 0, 320, 240, mainBackground);
+      
+      // Draw the static white box directly to the screen ONCE
+      tft.drawRoundRect(boxX, boxY, boxW, boxH, 4, TFT_WHITE);
+
       renderHeader();
       renderContent();
     }
 
     void fillBackground(TFT_eSprite* canvas, int canvasX, int canvasY) {
+      canvas->setSwapBytes(true);
       canvas->pushImage(-canvasX, -canvasY, 320, 240, mainBackground);
     }
 
@@ -97,85 +129,73 @@ class diagnosticsApp : public app {
 
     void renderContent() {
       TFT_eSprite* contentSPR = new TFT_eSprite(&tft);
-
-      contentSPR->setColorDepth(8);
       
-      contentSPR->createSprite(boxW, boxH);
-      fillBackground(contentSPR, boxX, boxY);
+      // shrink the sprite to fit inside the white box and 
+      // reduce the height to 140px. 306x140 takes ~85 KB of RAM, meaning 
+      // the ESP32 can safely render it in true 16-bit color
+      contentSPR->createSprite(boxW - 4, 140);
       
-      // The Delineated Box
-      contentSPR->drawRoundRect(0, 0, boxW, boxH, 4, TFT_WHITE);
+      // Offset the background fill so it aligns perfectly inside the static box
+      fillBackground(contentSPR, boxX + 2, boxY + 2);
       
-      // FIX 2: Explicitly format the text bounds to ensure rendering
       contentSPR->setTextColor(TFT_WHITE);
       contentSPR->setTextDatum(TL_DATUM); 
       contentSPR->setTextWrap(false); 
       contentSPR->loadFont(BebasNeue_Regular21); 
       
-      // Basic coordinates for dual-column text
-      int col1X = 15;
-      int col2X = 160;
-      int startY = 15;
-      int rowSpacing = 35; // Increased spacing slightly for readability
+      // Adjusted coordinates to account for the 2px sprite shift
+      int col1X = 13; 
+      int startY = 13;
+      int rowSpacing = 35;
 
       switch (currentTab) {
-        case 0: // CPU (ESP32 Processor)
-          contentSPR->drawString("Cores: 2 (Tensilica LX6)", col1X, startY);
-          contentSPR->drawString("Speed: " + String(ESP.getCpuFreqMHz()) + " MHz", col2X, startY);
-          
-          contentSPR->drawString("Architecture: 32-bit", col1X, startY + rowSpacing);
-          contentSPR->drawString("Base speed: 240 MHz", col2X, startY + rowSpacing);
-          
-          contentSPR->drawString("Up time: " + String(millis() / 1000) + " sec", col1X, startY + (rowSpacing * 2));
-          contentSPR->drawString("Sockets: 1", col2X, startY + (rowSpacing * 2));
-          break;
-
-        case 1: // Memory (ESP32 RAM)
-          contentSPR->drawString("Total Heap: " + String(ESP.getHeapSize() / 1024.0, 1) + " KB", col1X, startY);
-          contentSPR->drawString("Available: " + String(ESP.getFreeHeap() / 1024.0, 1) + " KB", col2X, startY);
-          
-          contentSPR->drawString("In use: " + String((ESP.getHeapSize() - ESP.getFreeHeap()) / 1024.0, 1) + " KB", col1X, startY + rowSpacing);
-          contentSPR->drawString("Type: SRAM", col2X, startY + rowSpacing);
-          
-          contentSPR->drawString("Min Free: " + String(ESP.getMinFreeHeap() / 1024.0, 1) + " KB", col1X, startY + (rowSpacing * 2));
-          break;
-
-        case 2: // Disk (ESP32 SPI Flash)
-          contentSPR->drawString("Capacity: " + String(ESP.getFlashChipSize() / (1024.0 * 1024.0), 1) + " MB", col1X, startY);
-          contentSPR->drawString("Type: SPI Flash", col2X, startY);
-          
-          contentSPR->drawString("Speed: " + String(ESP.getFlashChipSpeed() / 1000000) + " MHz", col1X, startY + rowSpacing);
-          contentSPR->drawString("System disk: Yes", col2X, startY + rowSpacing);
-          break;
-
-        case 3: // Wi-Fi (ESP32 Wireless)
-          contentSPR->drawString("Adapter: ESP32 Wi-Fi", col1X, startY);
-          
-          // SAFETY FIX: Prevent core panics by checking if the radio is actually on
-          if (WiFi.getMode() == WIFI_OFF || WiFi.status() != WL_CONNECTED) {
-            contentSPR->drawString("Status: OFFLINE", col2X, startY);
-            contentSPR->drawString("Radio: Disabled (Power Saved)", col1X, startY + rowSpacing);
-            contentSPR->drawString("Signal (RSSI): N/A", col2X, startY + rowSpacing);
+        case 0:
+          if (millis() - lastHostUpdate < 3000) {
+            contentSPR->drawString("Host CPU Load: " + String(hostCPU) + "%", col1X, startY);
           } else {
-            contentSPR->drawString("SSID: " + WiFi.SSID(), col2X, startY);
-            contentSPR->drawString("IPv4: " + WiFi.localIP().toString(), col1X, startY + rowSpacing);
-            contentSPR->drawString("Signal (RSSI): " + String(WiFi.RSSI()) + " dBm", col2X, startY + rowSpacing);
+            contentSPR->drawString("Waiting for Host...", col1X, startY);
           }
           break;
 
-        case 4: // GPU (TFT Display Driver)
-          contentSPR->drawString("Display: TFT LCD", col1X, startY);
-          contentSPR->drawString("Resolution: 320x240", col2X, startY);
+        case 1:
+          if (millis() - lastHostUpdate < 3000) {
+            contentSPR->drawString("Host RAM Load: " + String(hostRAM) + "%", col1X, startY);
+          } else {
+            contentSPR->drawString("Waiting for Host...", col1X, startY);
+          }
+          break;
+
+        case 2:
+          contentSPR->drawString("Capacity: " + String(ESP.getFlashChipSize() / (1024.0 * 1024.0), 1) + " MB", col1X, startY);
+          contentSPR->drawString("Type: SPI Flash", col1X, startY + rowSpacing);
+          contentSPR->drawString("Speed: " + String(ESP.getFlashChipSpeed() / 1000000) + " MHz", col1X, startY + (rowSpacing * 2));
+          contentSPR->drawString("System disk: Yes", col1X, startY + (rowSpacing * 3));
+          break;
+
+        case 3:
+          contentSPR->drawString("Adapter: ESP32 Wi-Fi", col1X, startY);
           
-          contentSPR->drawString("Driver: TFT_eSPI", col1X, startY + rowSpacing);
-          contentSPR->drawString("Color Depth: 16-bit", col2X, startY + rowSpacing);
-          
-          contentSPR->drawString("Interface: SPI", col1X, startY + (rowSpacing * 2));
-          contentSPR->drawString("Hardware reserved: 1", col2X, startY + (rowSpacing * 2));
+          if (WiFi.getMode() == WIFI_OFF || WiFi.status() != WL_CONNECTED) {
+            contentSPR->drawString("Status: OFFLINE", col1X, startY + rowSpacing);
+            contentSPR->drawString("Radio: Disabled", col1X, startY + (rowSpacing * 2));
+          } else {
+            contentSPR->drawString("SSID: " + WiFi.SSID(), col1X, startY + rowSpacing);
+            contentSPR->drawString("IPv4: " + WiFi.localIP().toString(), col1X, startY + (rowSpacing * 2));
+            contentSPR->drawString("Signal (RSSI): " + String(WiFi.RSSI()) + " dBm", col1X, startY + (rowSpacing * 3));
+          }
+          break;
+
+        case 4:
+          if (millis() - lastHostUpdate < 3000) {
+            contentSPR->drawString("Host GPU Load: " + String(hostGPU) + "%", col1X, startY);
+          } else {
+            contentSPR->drawString("Waiting for Host...", col1X, startY);
+          }
           break;
       }
 
-      contentSPR->pushSprite(boxX, boxY);
+      // Push the sprite safely inside the static white borders
+      contentSPR->pushSprite(boxX + 2, boxY + 2);
       contentSPR->unloadFont();
       contentSPR->deleteSprite();
       delete contentSPR;
