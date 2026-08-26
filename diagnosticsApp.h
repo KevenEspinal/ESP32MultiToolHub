@@ -84,7 +84,7 @@ class diagnosticsApp : public app {
       tft.setSwapBytes(true);
       tft.pushImage(0, 0, 320, 240, mainBackground);
       
-      // Draw the static white box directly to the screen ONCE
+      // Draw the static white box directly to the screen
       tft.drawRoundRect(boxX, boxY, boxW, boxH, 4, TFT_WHITE);
 
       renderHeader();

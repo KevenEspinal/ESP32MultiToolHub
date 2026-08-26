@@ -129,7 +129,7 @@ class mediaEditor{
     totalTime = newDuration;
     isTrackLoaded = true; // Flags that a song is active
 
-    if(newIsPlaying == "PAUSED") {
+    if(newIsPlaying == "PAUSED" || newIsPlaying == "Paused") {
       isPlaying = false;
     } else {
       isPlaying = true;
