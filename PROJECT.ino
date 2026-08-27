@@ -68,6 +68,8 @@
   static String amsState = "";
   
   bool needDiagnostics = false;
+  static unsigned long phase1StartTime = 0;
+
 // This sends the commands that the user wants to execute to the iPhone
 int media_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error, struct ble_gatt_attr *attr, void *arg) {
   if (error->status == 0) {
@@ -116,6 +118,7 @@ int custom_gap_cb(struct ble_gap_event *event, void *arg) {
   } else if (event->type == BLE_GAP_EVENT_ENC_CHANGE) {             // Triggers when the security/encryption process finishes
     if (event->enc_change.status == 0) {                            // Safety net, checks if the encryption was successful and updates global variables
       setupPhase = 1;
+      phase1StartTime = millis();
       actionComplete = true;
     }
   } else if (event->type == BLE_GAP_EVENT_NOTIFY_RX) {              // Triggers when iPhone pushes data 
@@ -321,41 +324,47 @@ int currentMode = 0;  // 1 = clock app   2 = links app   3 = playlist app   4 = 
 void handleSerialInput() {
   if (Serial.available() == 0) return; 
 
-  String incomingMsg = Serial.readStringUntil('\n');
-  incomingMsg.trim(); 
+  char incomingMsg[512];
+  size_t len = Serial.readBytesUntil('\n', incomingMsg, sizeof(incomingMsg) - 1);
+  incomingMsg[len] = '\0';
+  
+  while(len > 0 && (incomingMsg[len-1] == '\r' || incomingMsg[len-1] == ' ')){
+    incomingMsg[len-1] = '\0';
+    len--;
+  }
 
-  int firstDelimiter = incomingMsg.indexOf('|');
-  String command = incomingMsg.substring(0, firstDelimiter);
+  char* command = strtok(incomingMsg, "|");
+  if (!command) return;
 
-  if (command == "MEDIA") {
-    int secondDelim = incomingMsg.indexOf('|', firstDelimiter + 1);
-    int thirdDelim  = incomingMsg.indexOf('|', secondDelim + 1);
-    int fourthDelim = incomingMsg.indexOf('|', thirdDelim + 1);
-    int fifthDelim  = incomingMsg.indexOf('|', fourthDelim + 1);
+  if (strcmp(command, "MEDIA") == 0) {
+    char* songName = strtok(NULL, "|");
+    char* artistName = strtok(NULL, "|");
+    char* progressSecStr = strtok(NULL, "|");
+    char* durationSecStr = strtok(NULL, "|");
+    char* state = strtok(NULL, "|");
 
-    String songName   = incomingMsg.substring(firstDelimiter + 1, secondDelim);
-    String artistName = incomingMsg.substring(secondDelim + 1, thirdDelim);
-    int progressSec   = incomingMsg.substring(thirdDelim + 1, fourthDelim).toInt();
-    int durationSec   = incomingMsg.substring(fourthDelim + 1, fifthDelim).toInt();
-    String state      = incomingMsg.substring(fifthDelim + 1);
+    if (songName && artistName && progressSecStr && durationSecStr && state) {
+      int progressSec = atoi(progressSecStr);
+      int durationSec = atoi(durationSecStr);
 
-    mediaScreen.updateTrackData(songName, artistName, progressSec, durationSec, state);
+      mediaScreen.updateTrackData(String(songName), String(artistName), progressSec, durationSec, String(state));
 
-    if (currentMode == 0 || currentMode == 1 || currentMode == 3) {
-      if (currentMode == 0) menuObject.clearMenu();
-      if (currentMode == 1) clockApp.clearScreen();
-      if (currentMode == 3) playlist.clearScreen();
-      
-      tft.pushImage(0, 0, 320, 240, mainBackground);
-      currentMode = 4;
-      mediaScreen.render(); 
-    } 
-    // Explicitly tell it to redraw
-    else if (currentMode == 4) {
-      mediaScreen.render();
+      if (currentMode == 0 || currentMode == 1 || currentMode == 3) {
+        if (currentMode == 0) menuObject.clearMenu();
+        if (currentMode == 1) clockApp.clearScreen(); 
+        if (currentMode == 3) playlist.clearScreen(); 
+        
+        tft.pushImage(0, 0, 320, 240, mainBackground);
+        currentMode = 4;
+        mediaScreen.render(); 
+      } 
+      // Explicitly tell it to redraw
+      else if (currentMode == 4) {
+        mediaScreen.render();
+      }
     }
   } 
-  else if (command == "IDLE") {
+  else if (strcmp(command, "IDLE") == 0) {
     mediaScreen.clearActiveMedia(); // Erase the active flag
     
     if (currentMode == 4) {
@@ -364,54 +373,51 @@ void handleSerialInput() {
       menuObject.setup(appsInfo.getNamesList());
       currentMode = 0;
     }
-  }else if (command == "DIAG" && needDiagnostics) {
-    int secondDelim = incomingMsg.indexOf('|', firstDelimiter + 1);
-    int thirdDelim  = incomingMsg.indexOf('|', secondDelim + 1);
+  } else if (strcmp(command, "DIAG") == 0 && needDiagnostics) {
+    char* cpuStr = strtok(NULL, "|");
+    char* ramStr = strtok(NULL, "|");
+    char* gpuStr = strtok(NULL, "|");
 
-    String cpuStr = incomingMsg.substring(firstDelimiter + 5, secondDelim);
-    String ramStr = incomingMsg.substring(secondDelim + 5, thirdDelim);
-    String gpuStr = incomingMsg.substring(thirdDelim + 5);
-
-    diagnostics.updateHostStats(cpuStr.toInt(), ramStr.toInt(), gpuStr.toInt());
-  } else if (command == "WEATHER") {
-    int delimiterIndices[27];                                 // There are 27 total delineators incoming from a WEATHER type payload
-    delimiterIndices[0] = firstDelimiter;
-
-    for (int i = 1; i < 27; i++) {
-      delimiterIndices[i] = incomingMsg.indexOf('|', delimiterIndices[i - 1] + 1);        // Stores all indeces of delineators from payload
+    if (cpuStr && ramStr && gpuStr) {
+      diagnostics.updateHostStats(atoi(cpuStr + 4), atoi(ramStr + 4), atoi(gpuStr + 4));
     }
+  } else if (strcmp(command, "WEATHER") == 0) {
+    // There are 27 total delineators incoming from a WEATHER type payload
+    // Stores all indeces of delineators from payload
+    char* currentConditionStr = strtok(NULL, "|");
+    char* currentTempStr = strtok(NULL, "|");
 
+    if (currentConditionStr && currentTempStr) {
+      // Independently store data for current time as it messes up the module math in the loop
+      String currentCondition = String(currentConditionStr);
+      int currentTemp = atoi(currentTempStr);
 
-    // Independently store data for current time as it messes up the module math in the loop
-    String currentCondition = incomingMsg.substring(delimiterIndices[0] + 1, delimiterIndices[1]);
-    int currentTemp = incomingMsg.substring(delimiterIndices[1] + 1, delimiterIndices[2]).toInt();
+      // Declare arrays to store data for all times after the current time
+      String conditions[8];
+      int temperatures[8];
+      String times[8];
 
-    // Declare arrays to store data for all times after the current time
-    String conditions[8];
-    int temperatures[8];
-    String times[8];
+      int dataStorageIndex = 0;
 
-    int dataStorageIndex = 0;
+      for (int i = 0; i < 24; i++) {
+        char* extractedData = strtok(NULL, "|");
+        if (!extractedData) break;
 
-    for (int i = 3; i < 27; i++) {
-      if (i == 26) {
-        delimiterIndices[26] = incomingMsg.length();
+        if (i % 3 == 0) {
+          times[dataStorageIndex] = String(extractedData);
+        } else if (i % 3 == 1) {
+          temperatures[dataStorageIndex] = atoi(extractedData);
+        } else if (i % 3 == 2) {
+          conditions[dataStorageIndex] = String(extractedData);
+          dataStorageIndex++;
+          if (dataStorageIndex >= 8) break;
+        }
       }
-
-      String extractedData = incomingMsg.substring(delimiterIndices[i - 1] + 1, delimiterIndices[i]);
-
-      if (i % 3 == 0) {
-        times[dataStorageIndex] = extractedData;
-      } else if (i % 3 == 1) {
-        temperatures[dataStorageIndex] = extractedData.toInt();
-      } else if (i % 3 == 2) {
-        conditions[dataStorageIndex] = extractedData;
-        dataStorageIndex++;
-      }
+      weather.updateData(times, temperatures, conditions, 8);
     }
-    weather.updateData(times, temperatures, conditions, 8);
   }
 }
+
 void loop() {
 // --- IPHONE MODE ---
   // Resets connetion status, clears media data sprites and resets back to menu screen
@@ -433,8 +439,8 @@ void loop() {
     
     if (currentMode == 0 || currentMode == 1 || currentMode == 3) {
       if (currentMode == 0) menuObject.clearMenu();
-      if (currentMode == 1) clockApp.clearScreen();
-      if (currentMode == 3) playlist.clearScreen();
+      if (currentMode == 1) clockApp.clearScreen(); 
+      if (currentMode == 3) playlist.clearScreen(); 
       
       tft.pushImage(0, 0, 320, 240, mainBackground);
       currentMode = 4;
@@ -447,58 +453,62 @@ void loop() {
 
   // State machine that executes the required steps to fully subscribe to the iPhone's media notifications
   if (actionComplete) {
-    actionComplete = false;
-    // Waits for 2000 milliseconds to ensure the newly established BLE connection is stable, advances the phase to 2, and asks the NimBLE stack to discover all available services on the iPhone
-    if (setupPhase == 1) {
-      delay(2000); 
-      setupPhase = 2;
-      ble_gattc_disc_all_svcs(activeConnHandle, gattc_cb, nullptr);
-    } 
-    // Checks if the AMS was successfully found by verifying amsStartHandle is not zero
-    // If found, it advances to phase 3 and asks the stack to discover all characteristics strictly within the start and end handles of that specific service
-    else if (setupPhase == 2) {
-      if (amsStartHandle != 0) {
-        setupPhase = 3;
-        ble_gattc_disc_all_chrs(activeConnHandle, amsStartHandle, amsEndHandle, chr_disc_cb, nullptr);
+    if (setupPhase == 1 && (millis() - phase1StartTime < 2000)) {
+      // Non-blocking wait: let the loop continue running while we wait 2 seconds
+    } else {
+      actionComplete = false;
+      
+      // Waits for 2000 milliseconds to ensure the newly established BLE connection is stable, advances the phase to 2, and asks the NimBLE stack to discover all available services on the iPhone
+      if (setupPhase == 1) {
+        setupPhase = 2;
+        ble_gattc_disc_all_svcs(activeConnHandle, gattc_cb, nullptr);
+      } 
+      // Checks if the AMS was successfully found by verifying amsStartHandle is not zero
+      // If found, it advances to phase 3 and asks the stack to discover all characteristics strictly within the start and end handles of that specific service
+      else if (setupPhase == 2) {
+        if (amsStartHandle != 0) {
+          setupPhase = 3;
+          ble_gattc_disc_all_chrs(activeConnHandle, amsStartHandle, amsEndHandle, chr_disc_cb, nullptr);
+        }
       }
-    }
-    // Checks if the "Entity Update" characteristic was successfully found. If found, it advances to phase 4 and requests the discovery of all descriptors attached to it
-    else if (setupPhase == 3) {
-      if (entityUpdateHandle != 0) {
-        setupPhase = 4;
-        ble_gattc_disc_all_dscs(activeConnHandle, entityUpdateHandle, amsEndHandle, dsc_disc_cb, nullptr);
+      // Checks if the "Entity Update" characteristic was successfully found. If found, it advances to phase 4 and requests the discovery of all descriptors attached to it
+      else if (setupPhase == 3) {
+        if (entityUpdateHandle != 0) {
+          setupPhase = 4;
+          ble_gattc_disc_all_dscs(activeConnHandle, entityUpdateHandle, amsEndHandle, dsc_disc_cb, nullptr);
+        }
       }
-    }
-    // Checks if CCCD was found. It advances to phase 5 and writes a byte array to CCCD
-    // This is the universal BLE command that tells the iPhone to turn on notifications. Checks for failures (rc != 0), it resets the actionComplete flag to true so the loop will try again
-    else if (setupPhase == 4) {
-      if (cccdHandle != 0) {
-        setupPhase = 5;
-        uint8_t cccd_val[] = {0x01, 0x00};
-        int rc = ble_gattc_write_flat(activeConnHandle, cccdHandle, cccd_val, sizeof(cccd_val), write_cb, (void*)4);
+      // Checks if CCCD was found. It advances to phase 5 and writes a byte array to CCCD
+      // This is the universal BLE command that tells the iPhone to turn on notifications. Checks for failures (rc != 0), it resets the actionComplete flag to true so the loop will try again
+      else if (setupPhase == 4) {
+        if (cccdHandle != 0) {
+          setupPhase = 5;
+          uint8_t cccd_val[] = {0x01, 0x00};
+          int rc = ble_gattc_write_flat(activeConnHandle, cccdHandle, cccd_val, sizeof(cccd_val), write_cb, (void*)4);
+          if (rc != 0) actionComplete = true;
+        }
+      }
+      // Advances to phase 6 and writes {2, 0, 1, 2, 3} to the Entity Update characteristic
+      // Which according to AMS specification, Entity ID 2 represents the "Track"
+      // This specific byte array commands the iPhone to notify the ESP32 whenever the track's Artist (0), Album (1), Title (2), or Duration (3) changes
+      else if (setupPhase == 5) {
+        setupPhase = 6;
+        uint8_t trackCmd[] = {2, 0, 1, 2, 3};
+        int rc = ble_gattc_write_flat(activeConnHandle, entityUpdateHandle, trackCmd, sizeof(trackCmd), write_cb, (void*)5);
         if (rc != 0) actionComplete = true;
       }
-    }
-    // Advances to phase 6 and writes {2, 0, 1, 2, 3} to the Entity Update characteristic
-    // Which according to AMS specification, Entity ID 2 represents the "Track"
-    // This specific byte array commands the iPhone to notify the ESP32 whenever the track's Artist (0), Album (1), Title (2), or Duration (3) changes
-    else if (setupPhase == 5) {
-      setupPhase = 6;
-      uint8_t trackCmd[] = {2, 0, 1, 2, 3};
-      int rc = ble_gattc_write_flat(activeConnHandle, entityUpdateHandle, trackCmd, sizeof(trackCmd), write_cb, (void*)5);
-      if (rc != 0) actionComplete = true;
-    }
-    // Advances to phase 7 and writes {0, 1} to the Entity Update characteristic. Entity ID 0 represents the "Media Player"
-    // This specific command tells the iPhone to notify the ESP32 whenever the playback state changes, such as when a song is paused or playing
-    else if (setupPhase == 6) {
-      setupPhase = 7;
-      uint8_t playerCmd[] = {0, 1};
-      int rc = ble_gattc_write_flat(activeConnHandle, entityUpdateHandle, playerCmd, sizeof(playerCmd), write_cb, (void*)6);
-      if (rc != 0) actionComplete = true;
-    }
-    // The setup process is fully complete, so it resets the setupPhase variable back to 0. The ESP32 is now passively waiting to receive pushed data
-    else if (setupPhase == 7) {
-      setupPhase = 0; 
+      // Advances to phase 7 and writes {0, 1} to the Entity Update characteristic. Entity ID 0 represents the "Media Player"
+      // This specific command tells the iPhone to notify the ESP32 whenever the playback state changes, such as when a song is paused or playing
+      else if (setupPhase == 6) {
+        setupPhase = 7;
+        uint8_t playerCmd[] = {0, 1};
+        int rc = ble_gattc_write_flat(activeConnHandle, entityUpdateHandle, playerCmd, sizeof(playerCmd), write_cb, (void*)6);
+        if (rc != 0) actionComplete = true;
+      }
+      // The setup process is fully complete, so it resets the setupPhase variable back to 0. The ESP32 is now passively waiting to receive pushed data
+      else if (setupPhase == 7) {
+        setupPhase = 0; 
+      }
     }
   }
 

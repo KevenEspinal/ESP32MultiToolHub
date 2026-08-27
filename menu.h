@@ -25,13 +25,22 @@ class menu {
 
   int center = canvasH / 2;
   public:
-  menu(){}
+  menu(){
+    canvas = new TFT_eSprite(&tft);
+  }
+
+  ~menu() {
+    if (canvas != nullptr) {
+      canvas->deleteSprite();
+      delete canvas;
+      canvas = nullptr;
+    }
+  }
 
   void setup(std::vector<String> appsNames) { 
     appNames = appsNames;
     currentSelection = 0; 
     
-    canvas = new TFT_eSprite(&tft);
     canvas->createSprite(canvasW, canvasH);
     canvas->setTextDatum(MC_DATUM);
 
