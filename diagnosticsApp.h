@@ -23,14 +23,33 @@ class diagnosticsApp : public app {
     int boxW = 310;
     int boxH = 195;
 
+    // NEW: Persistent pointers to replace local generation
+    TFT_eSprite* headerSPR;
+    TFT_eSprite* contentSPR;
+
   public:
     int hostCPU = 0;
     int hostRAM = 0;
     int hostGPU = 0;
     unsigned long lastHostUpdate = 0;
 
-    // Implemented your exact inherited constructor
-    diagnosticsApp(String name) : app(name) {}
+    diagnosticsApp(String name) : app(name) {
+      headerSPR = new TFT_eSprite(&tft);
+      contentSPR = new TFT_eSprite(&tft);
+    }
+
+    ~diagnosticsApp() {
+      if (headerSPR != nullptr) {
+        headerSPR->deleteSprite();
+        delete headerSPR;
+        headerSPR = nullptr;
+      }
+      if (contentSPR != nullptr) {
+        contentSPR->deleteSprite();
+        delete contentSPR;
+        contentSPR = nullptr;
+      }
+    }
 
     void updateHostStats(int cpu, int ram, int gpu) {
       hostCPU = cpu;
@@ -45,6 +64,10 @@ class diagnosticsApp : public app {
       // Explicitly wipe the root physical screen before drawing our floating sprites
       tft.setSwapBytes(true);
       tft.pushImage(0, 0, 320, 240, mainBackground); 
+
+      // Create sprites in memory ONCE per app launch
+      headerSPR->createSprite(320, headerH);
+      contentSPR->createSprite(boxW - 4, 140);
       
       render();
     }
@@ -97,8 +120,6 @@ class diagnosticsApp : public app {
     }
 
     void renderHeader() {
-      TFT_eSprite* headerSPR = new TFT_eSprite(&tft);
-      headerSPR->createSprite(320, headerH);
       fillBackground(headerSPR, 0, headerY);
       
       headerSPR->loadFont(BebasNeue_Regular21);
@@ -123,18 +144,9 @@ class diagnosticsApp : public app {
 
       headerSPR->pushSprite(0, headerY);
       headerSPR->unloadFont();
-      headerSPR->deleteSprite();
-      delete headerSPR;
     }
 
     void renderContent() {
-      TFT_eSprite* contentSPR = new TFT_eSprite(&tft);
-      
-      // shrink the sprite to fit inside the white box and 
-      // reduce the height to 140px. 306x140 takes ~85 KB of RAM, meaning 
-      // the ESP32 can safely render it in true 16-bit color
-      contentSPR->createSprite(boxW - 4, 140);
-      
       // Offset the background fill so it aligns perfectly inside the static box
       fillBackground(contentSPR, boxX + 2, boxY + 2);
       
@@ -197,11 +209,10 @@ class diagnosticsApp : public app {
       // Push the sprite safely inside the static white borders
       contentSPR->pushSprite(boxX + 2, boxY + 2);
       contentSPR->unloadFont();
-      contentSPR->deleteSprite();
-      delete contentSPR;
     }
 
     void clearScreen() {
-        // Leave empty if memory is strictly managed by local sprite generation
+      headerSPR->deleteSprite();
+      contentSPR->deleteSprite();
     }
 };
