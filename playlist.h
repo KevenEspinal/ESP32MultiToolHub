@@ -47,6 +47,14 @@ class playlistApp : public app {
       // REMOVED ALL DRAWING COMMANDS FROM HERE!
     }
 
+    ~playlistApp() {
+      if (canvas != nullptr) {
+        canvas->deleteSprite();
+        delete canvas;
+        canvas = nullptr;
+      }
+    }
+
     void scroll(int button) {
       if(button == 0) { 
         if(currentSelection > 0) { 
