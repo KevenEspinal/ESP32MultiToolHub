@@ -50,6 +50,14 @@ class linksApp : public app {
       scrollOffset = targetOffset;
     }
 
+    ~linksApp() {
+      if (canvas != nullptr) {
+        canvas->deleteSprite();
+        delete canvas;
+        canvas = nullptr;
+      }
+    }
+
     void scroll(int button) {
       if(button == 0) { 
         if(currentSelection > 0) { 
