@@ -16,6 +16,8 @@ class app{
     namesList.push_back(appName);
   }
 
+  virtual ~app() {}
+
   int getNumApps(){
     return totalNumApps;
   }

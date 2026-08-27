@@ -87,6 +87,19 @@ class mediaEditor{
     sidebarSPR = new TFT_eSprite(&tft);
   }
 
+  ~mediaEditor() {
+    if (progressBarSPR != nullptr) { delete progressBarSPR; progressBarSPR = nullptr; }
+    if (artistSPR != nullptr) { delete artistSPR; artistSPR = nullptr; }
+    if (songTitleSPR != nullptr) { delete songTitleSPR; songTitleSPR = nullptr; }
+    if (playSPR != nullptr) { delete playSPR; playSPR = nullptr; }
+    if (skipSPR != nullptr) { delete skipSPR; skipSPR = nullptr; }
+    if (previousSPR != nullptr) { delete previousSPR; previousSPR = nullptr; }
+    if (thumbnailSPR != nullptr) { delete thumbnailSPR; thumbnailSPR = nullptr; }
+    if (currentTimeSPR != nullptr) { delete currentTimeSPR; currentTimeSPR = nullptr; }
+    if (totalTimeSPR != nullptr) { delete totalTimeSPR; totalTimeSPR = nullptr; }
+    if (sidebarSPR != nullptr) { delete sidebarSPR; sidebarSPR = nullptr; }
+  }
+
   int selection(int buttonDirection) {
     lastActivityMillis = millis();
 
@@ -134,9 +147,6 @@ class mediaEditor{
     } else {
       isPlaying = true;
     }
-    
-    // Notice how all the render() functions are GONE. 
-    // This is now purely a data-setter so it doesn't crash the background!
   }
 
   void render(){
@@ -156,7 +166,7 @@ class mediaEditor{
  void renderProgressBar() {
     if (totalTime <= 0) return; 
 
-    // --- 1. Draw the Time Text ---
+    // Draw the time text
     char timeBuf[10];
     sprintf(timeBuf, "%d:%02d", currentTime / 60, currentTime % 60);
     String currentStr = String(timeBuf);
@@ -186,7 +196,7 @@ class mediaEditor{
     totalTimeSPR->pushSprite(totalTimeD.x, totalTimeD.y);
     totalTimeSPR->deleteSprite();
 
-    // --- 2. Draw the Progress Bar with Masking ---
+    // Draw the progress bar with masking
     int percentageW = (currentTime * progressBar.w) / totalTime; 
     if (percentageW > 0 && percentageW < (r * 2)) percentageW = r * 2;
 
@@ -335,14 +345,14 @@ class mediaEditor{
     // 2. Draw the clean mainBackground onto this patch
     fillBackground(patch, sidebarD.x, sidebarD.y);
     
-    // 3. Push the clean background patch to the screen to erase the sidebar
+    // Push the clean background patch to the screen to erase the sidebar
     patch->pushSprite(sidebarD.x, sidebarD.y);
     
-    // 4. Safely delete the temporary patch
+    // Safely delete the temporary patch
     patch->deleteSprite();
     delete patch;
     
-    // 5. Redraw the normal UI elements on top!
+    // Redraw the normal UI elements on top
     render(); 
   }
 
@@ -360,7 +370,7 @@ class mediaEditor{
     else if (currentMillis - previousMillis >= interval) {
       previousMillis = currentMillis; 
       
-      // THE FIX: Only tick the time forward and redraw if the music is actually playing!
+      // Only tick the time forward and redraw if the music is actually playing!
       if (isPlaying) {
         currentTime++; 
         renderProgressBar();
