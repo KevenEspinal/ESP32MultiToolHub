@@ -23,20 +23,23 @@ class weatherApp : public app {
     int targetOffset = 0;
     int itemSpacing = 70;
 
-    String times[8];
+    char times[8][16];
     int temperatures[8];
-    String conditions[8];
+    char conditions[8][32];
 
     bool hasRequested = false;
+    TFT_eSprite sprite;
 
-    String getDateString() {
+    const char* getDateString() {
+      static char dateBuf[64];
       struct tm timeinfo;
       if (getLocalTime(&timeinfo)) {
         char dayBuf[16];
         char monthBuf[16];
         strftime(dayBuf, sizeof(dayBuf), "%A", &timeinfo);
         strftime(monthBuf, sizeof(monthBuf), "%B", &timeinfo);
-        return String(dayBuf) + ", " + String(monthBuf) + " " + String(timeinfo.tm_mday);
+        snprintf(dateBuf, sizeof(dateBuf), "%s, %s %d", dayBuf, monthBuf, timeinfo.tm_mday);
+        return dateBuf;
       }
       return "Friday, August 7";
     }
@@ -44,7 +47,7 @@ class weatherApp : public app {
   public:
     bool dataArrived = false;
 
-    weatherApp(String name) : app(name) {
+    weatherApp(String name) : app(name), sprite(&tft) {
     }
 
     void reqData(){
@@ -55,9 +58,13 @@ class weatherApp : public app {
 
     void updateData(String t[], int temps[], String conds[], int arraySize){
       for(int i = 0; i < arraySize; i++){
-        times[i] = t[i];
+        strncpy(times[i], t[i].c_str(), sizeof(times[i]) - 1);
+        times[i][sizeof(times[i]) - 1] = '\0';
+        
         temperatures[i] = temps[i];
-        conditions[i] = conds[i];
+        
+        strncpy(conditions[i], conds[i].c_str(), sizeof(conditions[i]) - 1);
+        conditions[i][sizeof(conditions[i]) - 1] = '\0';
       }
       dataArrived = true;
       updateUI();
@@ -80,29 +87,27 @@ class weatherApp : public app {
     }
 
     void renderLoadingScreen(){
-      TFT_eSprite* loadingScreen = new TFT_eSprite(&tft);
-      loadingScreen->createSprite(160, 40);
-      loadingScreen->setSwapBytes(true);
-      loadingScreen->pushImage(-80, -100, 320, 240, mainBackground);
-      loadingScreen->setTextColor(TFT_WHITE);
-      loadingScreen->setTextDatum(MC_DATUM);
-      loadingScreen->loadFont(BebasNeue_Regular21);
-      loadingScreen->drawString("Collecting Data ...", 80, 20);
-      loadingScreen->pushSprite(80, 100);
-      loadingScreen->unloadFont();
-      loadingScreen->deleteSprite();
-      delete loadingScreen;
+      sprite.createSprite(160, 40);
+      sprite.setSwapBytes(true);
+      sprite.pushImage(-80, -100, 320, 240, mainBackground);
+      sprite.setTextColor(TFT_WHITE);
+      sprite.setTextDatum(MC_DATUM);
+      sprite.loadFont(BebasNeue_Regular21);
+      sprite.drawString("Collecting Data ...", 80, 20);
+      sprite.pushSprite(80, 100);
+      sprite.unloadFont();
+      sprite.deleteSprite();
     }
 
     void scroll(int button) {
-      if(button == 2) { 
+      if(button == 0) { 
         if(currentSelection > 0) { 
           currentSelection--;
           targetOffset = currentSelection * itemSpacing; 
           updateUI();
         }
       }
-      else if(button == 3) { 
+      else if(button == 1) { 
         if(currentSelection < 7) { 
           currentSelection++;
           targetOffset = currentSelection * itemSpacing; 
@@ -125,54 +130,56 @@ class weatherApp : public app {
     }
 
     void renderMainDisplay() {
-      TFT_eSprite* topSPR = new TFT_eSprite(&tft);
-      topSPR->createSprite(topArea.w, topArea.h);
-      topSPR->setSwapBytes(true);
-      topSPR->pushImage(0, 0, 320, 240, mainBackground);
+      sprite.createSprite(topArea.w, topArea.h);
+      sprite.setSwapBytes(true);
+      sprite.pushImage(0, 0, 320, 240, mainBackground);
       
-      topSPR->setTextColor(TFT_WHITE);
-      topSPR->setTextDatum(MC_DATUM);
-      topSPR->loadFont(BebasNeue_Regular21);
+      sprite.setTextColor(TFT_WHITE);
+      sprite.setTextDatum(MC_DATUM);
+      sprite.loadFont(BebasNeue_Regular21);
       
-      topSPR->drawString(getDateString(), 160, 20);
-      topSPR->drawString("Cranston, RI", 160, 45);
+      sprite.drawString(getDateString(), 160, 20);
+      sprite.drawString("Cranston, RI", 160, 45);
 
-      topSPR->drawString(conditions[currentSelection], 160, 90);
-      topSPR->drawString(String(temperatures[currentSelection]) + "  ", 160, 125); 
+      sprite.drawString(conditions[currentSelection], 160, 90);
+      
+      char tempBuf[16];
+      snprintf(tempBuf, sizeof(tempBuf), "%d  ", temperatures[currentSelection]);
+      sprite.drawString(tempBuf, 160, 125); 
 
-      topSPR->pushSprite(topArea.x, topArea.y);
-      topSPR->unloadFont();
-      topSPR->deleteSprite();
-      delete topSPR;
+      sprite.pushSprite(topArea.x, topArea.y);
+      sprite.unloadFont();
+      sprite.deleteSprite();
     }
 
     void renderScrollArea() {
-      TFT_eSprite* scrollSPR = new TFT_eSprite(&tft);
-      scrollSPR->createSprite(scrollArea.w, scrollArea.h);
-      scrollSPR->setSwapBytes(true);
-      scrollSPR->pushImage(0, -scrollArea.y, 320, 240, mainBackground);
+      sprite.createSprite(scrollArea.w, scrollArea.h);
+      sprite.setSwapBytes(true);
+      sprite.pushImage(0, -scrollArea.y, 320, 240, mainBackground);
 
-      scrollSPR->setTextColor(TFT_WHITE);
-      scrollSPR->setTextDatum(MC_DATUM);
-      scrollSPR->loadFont(BebasNeue_Regular21);
+      sprite.setTextColor(TFT_WHITE);
+      sprite.setTextDatum(MC_DATUM);
+      sprite.loadFont(BebasNeue_Regular21);
 
       for(int i = 0; i < 8; i++) {
         int xPos = (i * itemSpacing) - targetOffset + 160; 
         
         if (xPos > -30 && xPos < 350) {
           if (i == currentSelection) {
-            scrollSPR->setTextColor(TFT_NAVY);
+            sprite.setTextColor(TFT_NAVY);
           } else {
-            scrollSPR->setTextColor(TFT_DARKGREY);
+            sprite.setTextColor(TFT_DARKGREY);
           }
-          scrollSPR->drawString(times[i], xPos, 20);
-          scrollSPR->drawString(String(temperatures[i]), xPos, 50);
+          sprite.drawString(times[i], xPos, 20);
+          
+          char tempBuf[16];
+          snprintf(tempBuf, sizeof(tempBuf), "%d", temperatures[i]);
+          sprite.drawString(tempBuf, xPos, 50);
         }
       }
 
-      scrollSPR->pushSprite(scrollArea.x, scrollArea.y);
-      scrollSPR->unloadFont();
-      scrollSPR->deleteSprite();
-      delete scrollSPR;
+      sprite.pushSprite(scrollArea.x, scrollArea.y);
+      sprite.unloadFont();
+      sprite.deleteSprite();
     }
 };
