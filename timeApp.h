@@ -21,6 +21,14 @@ class ClockApp: public app {
       canvas = new TFT_eSprite(&tft);
     }
 
+    ~ClockApp() {
+      if (canvas != nullptr) {
+        canvas->deleteSprite();
+        delete canvas;
+        canvas = nullptr;
+      }
+    }
+
     void loadSprites() {
       // 1. MEMORY OPTIMIZATION: Only allocate this RAM the very first time!
       if (!spriteCreated) {
