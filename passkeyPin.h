@@ -2,7 +2,7 @@
 #include <TFT_eSPI.h>
 #include <ESP32Encoder.h>
 #include "background.h" 
-#include "customFonts.h" 
+#include "theme.h" 
 
 extern TFT_eSPI tft;
 extern ESP32Encoder encoder;
@@ -48,7 +48,7 @@ class pinScreen {
   // --- NEW: Add this helper from your previous classes ---
   void fillBackground(TFT_eSprite* canvas, int canvasX, int canvasY){
     canvas->setSwapBytes(true);
-    canvas->pushImage(-canvasX, -canvasY, 320, 240, mainBackground);
+    canvas->fillScreen(UI_BG);
   }
 
   // Use this in your main loop() to keep the screen updating
@@ -91,12 +91,13 @@ class pinScreen {
   }
 
   void renderPrompt(int currentNumber) {
-    // 1. Draw the live number so you aren't flying blind
+    // 1. Draw the live number in a bordered "well" so you aren't flying blind
     numberSPR->createSprite(numberDisplay.w, numberDisplay.h);
     fillBackground(numberSPR, numberDisplay.x, numberDisplay.y);
+    numberSPR->drawRoundRect(0, 0, numberDisplay.w, numberDisplay.h, UI_RADIUS_MD, UI_TEXT_GHOST);
     numberSPR->setTextDatum(MC_DATUM);
-    numberSPR->loadFont(BebasNeue_Regular21);
-    numberSPR->setTextColor(TFT_WHITE);
+    numberSPR->loadFont(FONT_HERO_LG);
+    numberSPR->setTextColor(UI_ACCENT);
     numberSPR->drawString(String(currentNumber), numberDisplay.w/2, numberDisplay.h/2);
     numberSPR->pushSprite(numberDisplay.x, numberDisplay.y);
     numberSPR->deleteSprite();
@@ -106,16 +107,16 @@ class pinScreen {
       circlesSPR[i]->createSprite(circles[i].w, circles[i].h);
       fillBackground(circlesSPR[i], circles[i].x, circles[i].y);
       
-      // FIX: Calculate Center and Radius for circles
-      int radius = circles[i].w / 2;
+      // Small inset so the outline never touches the sprite edge
+      int radius = circles[i].w / 2 - 2;
       int centerX = circles[i].w / 2;
       int centerY = circles[i].h / 2;
 
-      // Draw a solid circle if completed, hollow if pending
+      // Solid + accent-coloured once a digit is confirmed, hollow while pending
       if(i < currentDigit) {
-        circlesSPR[i]->fillCircle(centerX, centerY, radius, TFT_WHITE);
+        circlesSPR[i]->fillCircle(centerX, centerY, radius, UI_ACCENT);
       } else {
-        circlesSPR[i]->drawCircle(centerX, centerY, radius, TFT_WHITE);
+        circlesSPR[i]->drawCircle(centerX, centerY, radius, UI_BORDER);
       }
       
       circlesSPR[i]->pushSprite(circles[i].x, circles[i].y);

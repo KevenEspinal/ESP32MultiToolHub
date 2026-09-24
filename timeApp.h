@@ -1,6 +1,7 @@
 #pragma once
 #include <TFT_eSPI.h>
 #include "apps.h"
+#include "theme.h"
 #include <time.h> // Swapped to standard time.h for the ESP32 RTC struct
 
 extern TFT_eSPI tft;
@@ -37,10 +38,9 @@ class ClockApp: public app {
       }
 
       canvas->setSwapBytes(true);
-      canvas->pushImage(-canvasX, -canvasY, 320, 240, mainBackground);
+      canvas->fillScreen(UI_BG);
 
       canvas->setTextDatum(MC_DATUM);
-      canvas->setTextColor(TFT_WHITE);
 
       // 2. HARDWARE TIME FETCH: Talk directly to the ESP32's RTC
       struct tm timeinfo;
@@ -51,10 +51,16 @@ class ClockApp: public app {
           char dateBuffer[40];
           strftime(dateBuffer, sizeof(dateBuffer), "%A, %B %d, %Y", &timeinfo);
 
-          canvas->loadFont(BebasNeue_Regular25);
+          canvas->setTextColor(UI_ACCENT);
+          canvas->loadFont(FONT_UI_LG);
           canvas->drawString(timeBuffer, canvasW / 2, (canvasH / 2) - 18);
 
-          canvas->loadFont(BebasNeue_Regular21);
+          // A short accent rule between time and date - a small "watch
+          // face" touch that also separates the two info tiers visually.
+          canvas->drawFastHLine((canvasW / 2) - 20, (canvasH / 2) + 2, 40, UI_ACCENT_DIM);
+
+          canvas->setTextColor(UI_TEXT_MUTED);
+          canvas->loadFont(FONT_UI_SM);
           canvas->drawString(dateBuffer, canvasW / 2, (canvasH / 2) + 20);
       }
 

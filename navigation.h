@@ -65,42 +65,42 @@ class navigation {
     }
 
     int checkClick(uint8_t buttonPin) {
-        int currentState = digitalRead(buttonPin);
-        unsigned long currentMillis = millis();
-        int returnVal = 0;
+      int currentState = digitalRead(buttonPin);
+      unsigned long currentMillis = millis();
+      int returnVal = 0;
 
-        // 1. Standard Debouncing
-        if (currentState != lastFlickerableState) {
-            lastDebounceTime = currentMillis;
-            lastFlickerableState = currentState;
+      // 1. Standard Debouncing
+      if (currentState != lastFlickerableState) {
+        lastDebounceTime = currentMillis;
+        lastFlickerableState = currentState;
+      }
+
+      if ((currentMillis - lastDebounceTime) > debounceDelay) {
+        if (currentState != lastSteadyState) {
+          lastSteadyState = currentState;
+          
+          // If button is physically pushed down
+          if (currentState == LOW) { 
+            clickCount++;
+            lastPressTime = currentMillis;
+          }
         }
+      }
 
-        if ((currentMillis - lastDebounceTime) > debounceDelay) {
-            if (currentState != lastSteadyState) {
-                lastSteadyState = currentState;
-                
-                // If button is physically pushed down
-                if (currentState == LOW) { 
-                    clickCount++;
-                    lastPressTime = currentMillis;
-                }
-            }
+      // 2. Evaluate the clicks based on the stopwatch
+      if (clickCount > 0) {
+        // If they click twice quickly, trigger immediately!
+        if (clickCount >= 2) {
+          returnVal = 2; // Double click
+          clickCount = 0; // Reset for next time
         }
-
-        // 2. Evaluate the clicks based on the stopwatch
-        if (clickCount > 0) {
-            // If they click twice quickly, trigger immediately!
-            if (clickCount >= 2) {
-                returnVal = 2; // Double click
-                clickCount = 0; // Reset for next time
-            }
-            // If 600ms passes and they haven't clicked a second time, confirm the single click
-            else if ((currentMillis - lastPressTime) > doubleClickWindow) {
-                returnVal = 1; // Single click
-                clickCount = 0; // Reset for next time
-            }
+        // If 600ms passes and they haven't clicked a second time, confirm the single click
+        else if ((currentMillis - lastPressTime) > doubleClickWindow) {
+          returnVal = 1; // Single click
+          clickCount = 0; // Reset for next time
         }
+      }
 
-        return returnVal;
-    }
+      return returnVal;
+  }
 };

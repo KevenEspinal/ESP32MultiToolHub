@@ -2,7 +2,7 @@
 #include <TFT_eSPI.h>
 #include <WiFi.h>
 #include "background.h"
-#include "customFonts.h"
+#include "theme.h"
 #include "apps.h" // Ensure the parent class is available
 
 extern TFT_eSPI tft;
@@ -22,10 +22,53 @@ class diagnosticsApp : public app {
     int boxY = 40;
     int boxW = 310;
     int boxH = 195;
+    int contentH = 140; // kept at the original footprint on purpose — see notes below
 
     // NEW: Persistent pointers to replace local generation
     TFT_eSprite* headerSPR;
     TFT_eSprite* contentSPR;
+
+    // ---- shared row / hero-stat layouts, reused by every tab ----
+    void renderRow(int index, const String &label, const String &value, uint16_t valueColor) {
+      int y = 14 + index * 32;
+      contentSPR->loadFont(FONT_UI_SM);
+      contentSPR->setTextDatum(ML_DATUM);
+      contentSPR->setTextColor(UI_TEXT_MUTED);
+      contentSPR->drawString(label, 16, y);
+
+      contentSPR->loadFont(FONT_UI_LG);
+      contentSPR->setTextDatum(MR_DATUM);
+      contentSPR->setTextColor(valueColor);
+      contentSPR->drawString(value, 290, y);
+    }
+
+    void renderHeroStat(int value, const String &label) {
+      if (millis() - lastHostUpdate >= 3000) {
+        contentSPR->loadFont(FONT_UI_SM);
+        contentSPR->setTextDatum(MC_DATUM);
+        contentSPR->setTextColor(UI_TEXT_MUTED);
+        contentSPR->drawString("Waiting for Host...", 153, contentH / 2);
+        return;
+      }
+
+      int v = constrain(value, 0, 100);
+
+      contentSPR->loadFont(FONT_HERO_LG);
+      contentSPR->setTextDatum(MC_DATUM);
+      contentSPR->setTextColor(UI_ACCENT);
+      contentSPR->drawString(String(v) + "%", 153, 38);
+
+      contentSPR->loadFont(FONT_UI_SM);
+      contentSPR->setTextColor(UI_TEXT_MUTED);
+      contentSPR->drawString(label, 153, 70);
+
+      int barX = 40, barY = 92, barW = 226, barH = 14;
+      contentSPR->fillRoundRect(barX, barY, barW, barH, barH / 2, UI_TEXT_MUTED);
+      int fillW = (barW * v) / 100;
+      if (fillW > 0) {
+        contentSPR->fillRoundRect(barX, barY, fillW, barH, barH / 2, UI_ACCENT);
+      }
+    }
 
   public:
     int hostCPU = 0;
@@ -63,11 +106,11 @@ class diagnosticsApp : public app {
       
       // Explicitly wipe the root physical screen before drawing our floating sprites
       tft.setSwapBytes(true);
-      tft.pushImage(0, 0, 320, 240, mainBackground); 
+      tft.fillScreen(UI_BG); 
 
       // Create sprites in memory ONCE per app launch
       headerSPR->createSprite(320, headerH);
-      contentSPR->createSprite(boxW - 4, 140);
+      contentSPR->createSprite(boxW - 4, contentH);
       
       render();
     }
@@ -105,24 +148,35 @@ class diagnosticsApp : public app {
     void render() {
       // Wipe the screen and redraw the main background first
       tft.setSwapBytes(true);
-      tft.pushImage(0, 0, 320, 240, mainBackground);
+      tft.fillScreen(UI_BG);
       
-      // Draw the static white box directly to the screen
-      tft.drawRoundRect(boxX, boxY, boxW, boxH, 4, TFT_WHITE);
+      // Draw the static box outline directly to the screen
+      tft.drawRoundRect(boxX, boxY, boxW, boxH, UI_RADIUS_SM, UI_BORDER);
 
+      renderHeader();
+      renderContent();
+    }
+
+    // Repaint everything this app owns WITHOUT resetting the tab and
+    // without a full-screen wipe. This is what the sketch should call when
+    // the volume overlay hands its column back: loadScreen() was being used
+    // for that, and it sent you back to the CPU tab and strobed the display
+    // every single time you touched the volume knob inside this app.
+    void redraw() {
+      tft.drawRoundRect(boxX, boxY, boxW, boxH, UI_RADIUS_SM, UI_BORDER);
       renderHeader();
       renderContent();
     }
 
     void fillBackground(TFT_eSprite* canvas, int canvasX, int canvasY) {
       canvas->setSwapBytes(true);
-      canvas->pushImage(-canvasX, -canvasY, 320, 240, mainBackground);
+      canvas->fillScreen(UI_BG);
     }
 
     void renderHeader() {
       fillBackground(headerSPR, 0, headerY);
       
-      headerSPR->loadFont(BebasNeue_Regular21);
+      headerSPR->loadFont(FONT_UI_SM);
       headerSPR->setTextDatum(MC_DATUM);
       headerSPR->setTextWrap(false);
       
@@ -131,12 +185,12 @@ class diagnosticsApp : public app {
       for (int i = 0; i < 5; i++) {
         int centerX = (i * tabWidth) + (tabWidth / 2);
         
-        // Stationary text, moving cursor box
+        // Stationary text, moving highlight pill
         if (i == currentTab) {
-          headerSPR->fillRoundRect(i * tabWidth + 2, 0, tabWidth - 4, headerH, 4, TFT_NAVY);
-          headerSPR->setTextColor(TFT_WHITE);
+          headerSPR->fillRoundRect(i * tabWidth + 2, 0, tabWidth - 4, headerH, UI_RADIUS_SM, UI_ACCENT_GLOW);
+          headerSPR->setTextColor(UI_ACCENT);
         } else {
-          headerSPR->setTextColor(TFT_DARKGREY);
+          headerSPR->setTextColor(UI_TEXT_MUTED);
         }
         
         headerSPR->drawString(tabs[i], centerX, headerH / 2);
@@ -149,64 +203,44 @@ class diagnosticsApp : public app {
     void renderContent() {
       // Offset the background fill so it aligns perfectly inside the static box
       fillBackground(contentSPR, boxX + 2, boxY + 2);
-      
-      contentSPR->setTextColor(TFT_WHITE);
-      contentSPR->setTextDatum(TL_DATUM); 
-      contentSPR->setTextWrap(false); 
-      contentSPR->loadFont(BebasNeue_Regular21); 
-      
-      // Adjusted coordinates to account for the 2px sprite shift
-      int col1X = 13; 
-      int startY = 13;
-      int rowSpacing = 35;
+      contentSPR->setTextWrap(false);
 
       switch (currentTab) {
         case 0:
-          if (millis() - lastHostUpdate < 3000) {
-            contentSPR->drawString("Host CPU Load: " + String(hostCPU) + "%", col1X, startY);
-          } else {
-            contentSPR->drawString("Waiting for Host...", col1X, startY);
-          }
+          renderHeroStat(hostCPU, "HOST CPU LOAD");
           break;
 
         case 1:
-          if (millis() - lastHostUpdate < 3000) {
-            contentSPR->drawString("Host RAM Load: " + String(hostRAM) + "%", col1X, startY);
-          } else {
-            contentSPR->drawString("Waiting for Host...", col1X, startY);
-          }
+          renderHeroStat(hostRAM, "HOST RAM LOAD");
           break;
 
         case 2:
-          contentSPR->drawString("Capacity: " + String(ESP.getFlashChipSize() / (1024.0 * 1024.0), 1) + " MB", col1X, startY);
-          contentSPR->drawString("Type: SPI Flash", col1X, startY + rowSpacing);
-          contentSPR->drawString("Speed: " + String(ESP.getFlashChipSpeed() / 1000000) + " MHz", col1X, startY + (rowSpacing * 2));
-          contentSPR->drawString("System disk: Yes", col1X, startY + (rowSpacing * 3));
+          renderRow(0, "CAPACITY", String(ESP.getFlashChipSize() / (1024.0 * 1024.0), 1) + " MB", UI_TEXT);
+          renderRow(1, "TYPE", "SPI Flash", UI_TEXT);
+          renderRow(2, "SPEED", String(ESP.getFlashChipSpeed() / 1000000) + " MHz", UI_TEXT);
+          renderRow(3, "SYSTEM DISK", "Yes", UI_TEXT);
           break;
 
-        case 3:
-          contentSPR->drawString("Adapter: ESP32 Wi-Fi", col1X, startY);
-          
-          if (WiFi.getMode() == WIFI_OFF || WiFi.status() != WL_CONNECTED) {
-            contentSPR->drawString("Status: OFFLINE", col1X, startY + rowSpacing);
-            contentSPR->drawString("Radio: Disabled", col1X, startY + (rowSpacing * 2));
+        case 3: {
+          bool online = !(WiFi.getMode() == WIFI_OFF || WiFi.status() != WL_CONNECTED);
+          renderRow(0, "ADAPTER", "ESP32 Wi-Fi", UI_TEXT);
+          if (!online) {
+            renderRow(1, "STATUS", "OFFLINE", UI_BAD);
+            renderRow(2, "RADIO", "Disabled", UI_TEXT_MUTED);
           } else {
-            contentSPR->drawString("SSID: " + WiFi.SSID(), col1X, startY + rowSpacing);
-            contentSPR->drawString("IPv4: " + WiFi.localIP().toString(), col1X, startY + (rowSpacing * 2));
-            contentSPR->drawString("Signal (RSSI): " + String(WiFi.RSSI()) + " dBm", col1X, startY + (rowSpacing * 3));
+            renderRow(1, "SSID", WiFi.SSID(), UI_GOOD);
+            renderRow(2, "IPV4", WiFi.localIP().toString(), UI_TEXT);
+            renderRow(3, "SIGNAL", String(WiFi.RSSI()) + " dBm", UI_TEXT);
           }
           break;
+        }
 
         case 4:
-          if (millis() - lastHostUpdate < 3000) {
-            contentSPR->drawString("Host GPU Load: " + String(hostGPU) + "%", col1X, startY);
-          } else {
-            contentSPR->drawString("Waiting for Host...", col1X, startY);
-          }
+          renderHeroStat(hostGPU, "HOST GPU LOAD");
           break;
       }
 
-      // Push the sprite safely inside the static white borders
+      // Push the sprite safely inside the static border
       contentSPR->pushSprite(boxX + 2, boxY + 2);
       contentSPR->unloadFont();
     }

@@ -2,6 +2,7 @@
 #include <TFT_eSPI.h> 
 #include <vector>
 #include "apps.h"
+#include "theme.h"
 
 extern TFT_eSPI tft;
 
@@ -17,17 +18,16 @@ class playlistApp : public app {
     }; 
 
     TFT_eSprite* canvas; 
-  
-    int iconW;
-    int iconH = 140; 
-    int iconX;
-    int iconY;
-    int iconTextSeparation = 10;
 
+    // Carousel sprite kept close to its original small footprint — see
+    // the matching note in linksApp.h for why.
     int canvasW = 320;
-    int canvasH = 35; 
+    int canvasH = 40; 
     int canvasX = 0;
-    int canvasY = 160; 
+    int canvasY = 100; 
+
+    int titleY = 68;
+    int dotsY = 158;
   
     int currentSelection = 0;
     float scrollOffset = 0.0;    
@@ -35,16 +35,36 @@ class playlistApp : public app {
     int itemSpacing = 120;        
     int center = canvasW / 2;
 
-    // NEW: Memory protection flag
     bool spriteCreated = false; 
+
+    void renderTitle() {
+      tft.setTextDatum(MC_DATUM);
+      tft.loadFont(FONT_UI_SM);
+      tft.setTextColor(UI_TEXT_GHOST);
+      tft.drawString("PLAYLISTS", center, titleY);
+      tft.unloadFont();
+    }
+
+    void renderDots() {
+      int dotSpacing = 16;
+      int dotsTotalW = (int)(names.size() - 1) * dotSpacing;
+      int dotsStartX = center - dotsTotalW / 2;
+      for (int i = 0; i < (int)names.size(); i++) {
+        int dx = dotsStartX + i * dotSpacing;
+        tft.fillCircle(dx, dotsY, 3, UI_BG);
+        if (i == currentSelection) {
+          tft.fillCircle(dx, dotsY, 3, UI_ACCENT);
+        } else {
+          tft.fillCircle(dx, dotsY, 2, UI_TEXT_GHOST);
+        }
+      }
+    }
 
   public:
     playlistApp(String name) : app(name) { 
       canvas = new TFT_eSprite(&tft);
       targetOffset = currentSelection * itemSpacing;
       scrollOffset = targetOffset;
-      
-      // REMOVED ALL DRAWING COMMANDS FROM HERE!
     }
 
     ~playlistApp() {
@@ -81,7 +101,7 @@ class playlistApp : public app {
     }
 
     void renderSelectionScreen() {
-      // NEW: Only allocate the RAM and set the datum on the very first render!
+      // Only allocate the RAM and set the datum on the very first render!
       if (!spriteCreated) {
         canvas->createSprite(canvasW, canvasH);
         canvas->setTextDatum(MC_DATUM);
@@ -90,24 +110,28 @@ class playlistApp : public app {
       }
 
       canvas->setSwapBytes(true);
-      canvas->pushImage(-canvasX, -canvasY, 320, 240, mainBackground);
+      canvas->fillSprite(UI_BG);
       
       for(int i = 0; i < names.size(); i++) {
         float xPos = (i * itemSpacing) - scrollOffset + center;
         
         if(xPos > -30 && xPos < canvasW + 30) {
           if(i == currentSelection) {
-            canvas->loadFont(BebasNeue_Regular25);
-            canvas->setTextColor(TFT_WHITE); 
+            canvas->loadFont(FONT_UI_LG);
+            canvas->setTextColor(UI_ACCENT); 
             canvas->drawString(names[i], xPos, canvasH / 2);
           } else {
-            canvas->loadFont(BebasNeue_Regular21);
-            canvas->setTextColor(TFT_NAVY); 
+            float t = fabsf((float)(i - currentSelection)) / 3.0f;
+            canvas->loadFont(FONT_UI_SM);
+            canvas->setTextColor(uiLerp565(UI_TEXT_MUTED, UI_TEXT_GHOST, t));
             canvas->drawString(names[i], xPos, canvasH / 2);
           }
         }
       }
       canvas->pushSprite(canvasX, canvasY);
+
+      renderTitle();
+      renderDots();
     }
 
     void run() {

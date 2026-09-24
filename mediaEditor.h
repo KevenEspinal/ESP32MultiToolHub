@@ -1,8 +1,8 @@
 #pragma once
 #include <TFT_eSPI.h>
+#include <TJpg_Decoder.h>
 #include "background.h" 
-#include "customFonts.h"
-#include "smoothFonts.h" 
+#include "theme.h" 
 
 extern TFT_eSPI tft; 
 
@@ -19,17 +19,17 @@ class mediaEditor{
   // --- 320x240 Landscape Layout Initialization ---
   // Format: {X, Y, Width, Height}
   
-  UIBounds titleTxt    = {130, 20, 170, 40};  // Top Right
-  UIBounds artistTxt   = {130, 70, 170, 30};  // Middle Right
-  UIBounds thumbnail   = {20, 20, 90, 90};    // Top Left (Reserved for album art later)
+  UIBounds titleTxt    = {140, 20, 170, 40};  // Top Right
+  UIBounds artistTxt   = {140, 70, 170, 30};  // Middle Right
+  UIBounds thumbnail   = {10, 20, 120, 120};    // Top Left
 
-  UIBounds prevBtn     = {80, 130, 40, 30};   // Center-Left
-  UIBounds playBtn     = {140, 130, 40, 30};  // Dead Center
-  UIBounds skipBtn     = {200, 130, 40, 30};  // Center-Right
+  UIBounds prevBtn     = {80, 150, 40, 30};   // Center-Left
+  UIBounds playBtn     = {140, 150, 40, 30};  // Dead Center
+  UIBounds skipBtn     = {200, 150, 40, 30};  // Center-Right
   
-  UIBounds currentTimeD = {0, 180, 50, 30};   // Far Left
-  UIBounds progressBar  = {55, 190, 210, 10}; //  centered between the text
-  UIBounds totalTimeD   = {270, 180, 50, 30}; // Far Right
+  UIBounds currentTimeD = {0, 190, 50, 30};   // Far Left
+  UIBounds progressBar  = {55, 200, 210, 10}; //  centered between the text
+  UIBounds totalTimeD   = {270, 190, 50, 30}; // Far Right
 
   int r = 4; // Corner radius for the progress bar
   // -----------------------------------------------
@@ -57,6 +57,76 @@ class mediaEditor{
   unsigned long previousMillis = 0;
   unsigned long interval = 1000;
 
+  // --- Title / artist marquee ---
+  // Text that's too wide for its sprite holds on the start, scrolls once
+  // to reveal the rest, holds on the end, then loops back — never a
+  // constant crawl. Text that already fits just draws statically and
+  // never enters this state machine at all.
+  struct MarqueeState {
+    int phase = 0;             // 0 = hold start, 1 = scrolling, 2 = hold end
+    unsigned long phaseStart = 0;
+    int offset = 0;            // current negative x pixel offset
+    bool spriteReady = false;  // sprite is created once and reused, not per-frame
+
+    void reset() {
+      phase = 0;
+      phaseStart = millis();
+      offset = 0;
+    }
+  };
+  MarqueeState titleMarquee;
+  MarqueeState artistMarquee;
+  unsigned long previousMarqueeMillis = 0;
+  const unsigned long marqueeInterval = 60; // ~16fps, smooth enough for a slow crawl
+
+  // Shared renderer for both the title and artist sprites. Handles the
+  // hold/scroll/hold timing itself; callers just say what text and font
+  // to use. The sprite is created once (kept alive, unlike most of this
+  // class's other transient sprites) since this redraws far more often
+  // than a button or a time label ever did.
+  void renderMarqueeText(TFT_eSprite* spr, UIBounds bounds, const String &text, uint16_t color, MarqueeState &state, const uint8_t* font) {
+    if (!state.spriteReady) {
+      spr->createSprite(bounds.w, bounds.h);
+      state.spriteReady = true;
+    }
+    fillBackground(spr, bounds.x, bounds.y);
+    spr->setTextWrap(false);
+    spr->loadFont(font);
+    spr->setTextColor(color);
+
+    int textW = spr->textWidth(text);
+
+    if (textW <= bounds.w - 4) {
+      // Fits comfortably — simple static, centered, exactly as before.
+      spr->setTextDatum(MC_DATUM);
+      spr->drawString(text, bounds.w / 2, bounds.h / 2);
+    } else {
+      const unsigned long HOLD_START_MS = 3000;
+      const unsigned long SCROLL_MS     = 3500; // within the requested 3-4s
+      const unsigned long HOLD_END_MS   = 1200;
+
+      int maxOffset = textW - bounds.w + 8; // small margin so the last letter fully clears
+      unsigned long elapsed = millis() - state.phaseStart;
+
+      if (state.phase == 0) {                 // holding at the start
+        state.offset = 0;
+        if (elapsed >= HOLD_START_MS) { state.phase = 1; state.phaseStart = millis(); }
+      } else if (state.phase == 1) {           // scrolling to the end
+        float t = (float)elapsed / (float)SCROLL_MS;
+        if (t >= 1.0f) { t = 1.0f; state.phase = 2; state.phaseStart = millis(); }
+        state.offset = (int)(-maxOffset * t);
+      } else {                                 // holding at the end
+        state.offset = -maxOffset;
+        if (elapsed >= HOLD_END_MS) { state.phase = 0; state.phaseStart = millis(); state.offset = 0; }
+      }
+
+      spr->setTextDatum(ML_DATUM);
+      spr->drawString(text, state.offset, bounds.h / 2);
+    }
+
+    spr->pushSprite(bounds.x, bounds.y);
+  }
+
   bool isPlaying = true;
 
   int currentSelection = 0;
@@ -73,6 +143,8 @@ class mediaEditor{
 
   bool isTrackLoaded = false;
 
+  uint8_t* albumBuffer = nullptr;
+  size_t albumSize = 0;
   public:
   mediaEditor(){
     progressBarSPR = new TFT_eSprite(&tft);
@@ -85,6 +157,8 @@ class mediaEditor{
     currentTimeSPR = new TFT_eSprite(&tft);
     totalTimeSPR = new TFT_eSprite(&tft);
     sidebarSPR = new TFT_eSprite(&tft);
+    titleMarquee.reset();
+    artistMarquee.reset();
   }
 
   ~mediaEditor() {
@@ -98,6 +172,7 @@ class mediaEditor{
     if (currentTimeSPR != nullptr) { delete currentTimeSPR; currentTimeSPR = nullptr; }
     if (totalTimeSPR != nullptr) { delete totalTimeSPR; totalTimeSPR = nullptr; }
     if (sidebarSPR != nullptr) { delete sidebarSPR; sidebarSPR = nullptr; }
+    if (albumBuffer != nullptr) { free(albumBuffer); albumBuffer = nullptr; }
   }
 
   int selection(int buttonDirection) {
@@ -106,7 +181,7 @@ class mediaEditor{
     if (sidebarOpen) {
       if (buttonDirection == 1) { 
         currentSelection = 1; 
-        closeSidebar(); // Erase menu safely
+        closeSidebar(); // Erase menu 
       } 
       else if (buttonDirection == 2) { 
         if (sidebarSelection > 0) sidebarSelection--;
@@ -136,6 +211,11 @@ class mediaEditor{
   }
 
   void updateTrackData(String newTitle, String newArtist, int newProgress, int newDuration, String newIsPlaying) {
+    // A genuinely new title/artist restarts that marquee from the
+    // beginning instead of picking up mid-scroll from the last song.
+    if (newTitle != songTitle) titleMarquee.reset();
+    if (newArtist != artist) artistMarquee.reset();
+
     songTitle = newTitle;
     artist = newArtist;
     currentTime = newProgress;
@@ -160,7 +240,7 @@ class mediaEditor{
 
   void fillBackground(TFT_eSprite* canvas, int canvasX, int canvasY){
     canvas->setSwapBytes(true);
-    canvas->pushImage(-canvasX, -canvasY, 320, 240, mainBackground);
+    canvas->fillSprite(UI_BG);
   }
 
  void renderProgressBar() {
@@ -179,8 +259,8 @@ class mediaEditor{
       currentTimeSPR->createSprite(currentTimeD.w, currentTimeD.h);
       fillBackground(currentTimeSPR, currentTimeD.x, currentTimeD.y);
       currentTimeSPR->setTextDatum(MC_DATUM);
-      currentTimeSPR->loadFont(BebasNeue_Regular21);
-      currentTimeSPR->setTextColor(TFT_DARKGREY);
+      currentTimeSPR->loadFont(FONT_UI_SM);
+      currentTimeSPR->setTextColor(UI_TEXT_MUTED);
       currentTimeSPR->drawString(currentStr, currentTimeD.w/2, currentTimeD.h/2);
       currentTimeSPR->pushSprite(currentTimeD.x, currentTimeD.y);
       currentTimeSPR->deleteSprite();
@@ -190,8 +270,8 @@ class mediaEditor{
     totalTimeSPR->createSprite(totalTimeD.w, totalTimeD.h);
     fillBackground(totalTimeSPR, totalTimeD.x, totalTimeD.y);
     totalTimeSPR->setTextDatum(MC_DATUM);
-    totalTimeSPR->loadFont(BebasNeue_Regular21);
-    totalTimeSPR->setTextColor(TFT_DARKGREY);
+    totalTimeSPR->loadFont(FONT_UI_SM);
+    totalTimeSPR->setTextColor(UI_TEXT_MUTED);
     totalTimeSPR->drawString(totalStr, totalTimeD.w/2, totalTimeD.h/2);
     totalTimeSPR->pushSprite(totalTimeD.x, totalTimeD.y);
     totalTimeSPR->deleteSprite();
@@ -219,9 +299,9 @@ class mediaEditor{
     fillBackground(progressBarSPR, pX, progressBar.y);
 
     // Draw the shapes shifted by -pOffset. The TFT will perfectly cut off the hidden portion!
-    progressBarSPR->fillRoundRect(-pOffset, 0, progressBar.w, progressBar.h, r, TFT_DARKGREY);
+    progressBarSPR->fillRoundRect(-pOffset, 0, progressBar.w, progressBar.h, r, UI_TEXT_MUTED);
     if (percentageW > 0) {
-      progressBarSPR->fillRoundRect(-pOffset, 0, percentageW, progressBar.h, r, TFT_WHITE);
+      progressBarSPR->fillRoundRect(-pOffset, 0, percentageW, progressBar.h, r, UI_ACCENT);
     }
     
     progressBarSPR->pushSprite(pX, progressBar.y);
@@ -229,33 +309,16 @@ class mediaEditor{
   }
 
   void renderArtist(){
-    artistSPR->createSprite(artistTxt.w, artistTxt.h); 
-    artistSPR->setTextDatum(MC_DATUM);
-    artistSPR->setTextWrap(false);
-
-    fillBackground(artistSPR, artistTxt.x, artistTxt.y);
-    
-    artistSPR->loadFont(BebasNeue_Regular21);
-    artistSPR->setTextColor(TFT_NAVY); 
-    artistSPR->drawString(artist, artistTxt.w/2, artistTxt.h/2); // Draw to center of sprite
-    
-    artistSPR->pushSprite(artistTxt.x, artistTxt.y); 
-    artistSPR->deleteSprite();
+    // Dimmed while the sidebar is open, to keep focus on the app switcher
+    uint16_t color = sidebarOpen ? UI_TEXT_GHOST : UI_TEXT_MUTED;
+    renderMarqueeText(artistSPR, artistTxt, artist, color, artistMarquee, FONT_UI_SM);
   }
 
   void renderSongTitle(){
-    songTitleSPR->createSprite(titleTxt.w, titleTxt.h);
-    songTitleSPR->setTextDatum(MC_DATUM);
-    songTitleSPR->setTextWrap(false);
-
-    fillBackground(songTitleSPR, titleTxt.x, titleTxt.y);
-
-    songTitleSPR->loadFont(BebasNeue_Regular21);
-    songTitleSPR->setTextColor(TFT_NAVY); 
-    songTitleSPR->drawString(songTitle, titleTxt.w/2, titleTxt.h/2);
-    
-    songTitleSPR->pushSprite(titleTxt.x, titleTxt.y); 
-    songTitleSPR->deleteSprite();
+    // The title is the most important thing on this screen, so it gets
+    // full-strength text rather than the muted navy the rest once used.
+    uint16_t color = sidebarOpen ? UI_TEXT_GHOST : UI_TEXT;
+    renderMarqueeText(songTitleSPR, titleTxt, songTitle, color, titleMarquee, FONT_UI_SM);
   }
 
   void renderButtons(){
@@ -264,34 +327,32 @@ class mediaEditor{
     skipSPR->createSprite(skipBtn.w, skipBtn.h);
     previousSPR->createSprite(prevBtn.w, prevBtn.h);
 
-    playSPR->setTextDatum(MC_DATUM);
-    skipSPR->setTextDatum(MC_DATUM);
-    previousSPR->setTextDatum(MC_DATUM);
-
-    playSPR->setTextWrap(false);
-    skipSPR->setTextWrap(false);
-    previousSPR->setTextWrap(false); 
-
     fillBackground(playSPR, playBtn.x, playBtn.y);
     fillBackground(skipSPR, skipBtn.x, skipBtn.y);
     fillBackground(previousSPR, prevBtn.x, prevBtn.y);
 
-    playSPR->loadFont(BebasNeue_Regular21);
-    skipSPR->loadFont(BebasNeue_Regular21);
-    previousSPR->loadFont(BebasNeue_Regular21);
+    uint16_t playColor = (currentSelection == 2) ? UI_ACCENT : UI_TEXT_MUTED;
+    uint16_t skipColor = (currentSelection == 3) ? UI_ACCENT : UI_TEXT_MUTED;
+    uint16_t prevColor = (currentSelection == 1) ? UI_ACCENT : UI_TEXT_MUTED;
 
-    playSPR->setTextColor(TFT_NAVY);
-    skipSPR->setTextColor(TFT_NAVY);
-    previousSPR->setTextColor(TFT_NAVY);
+    // Real vector glyphs instead of ASCII stand-ins ("|| / |>", "-->", "<--").
 
-    if(currentSelection == 2) playSPR->setTextColor(TFT_WHITE);
-    else if(currentSelection == 3) skipSPR->setTextColor(TFT_WHITE);
-    else if(currentSelection == 1) previousSPR->setTextColor(TFT_WHITE);
+    // Previous: bar + left-pointing triangle
+    previousSPR->fillRect(11, 8, 3, 14, prevColor);
+    previousSPR->fillTriangle(27, 8, 27, 22, 14, 15, prevColor);
 
-    // Draw strings to the center of their respective sprites
-    playSPR->drawString("|| / |>", playBtn.w/2, playBtn.h/2);
-    skipSPR->drawString("-->", skipBtn.w/2, skipBtn.h/2);
-    previousSPR->drawString("<--", prevBtn.w/2, prevBtn.h/2);
+    // Play / pause — drawn straight from the real isPlaying state, so the
+    // icon always matches what tapping it will actually do next.
+    if (isPlaying) {
+      playSPR->fillRect(14, 7, 6, 16, playColor);
+      playSPR->fillRect(22, 7, 6, 16, playColor);
+    } else {
+      playSPR->fillTriangle(14, 7, 14, 23, 28, 15, playColor);
+    }
+
+    // Skip: right-pointing triangle + bar
+    skipSPR->fillTriangle(13, 8, 13, 22, 26, 15, skipColor);
+    skipSPR->fillRect(26, 8, 3, 14, skipColor);
 
     // Push sprites using struct coordinates
     playSPR->pushSprite(playBtn.x, playBtn.y);
@@ -303,32 +364,69 @@ class mediaEditor{
     previousSPR->deleteSprite();
   }
 
-  void renderThumbnail(){}
+  bool decodeArt(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
+    thumbnailSPR->pushImage(x, y, w, h, bitmap);
+    return 1;
+  }
+
+  void setAlbumArt(uint8_t* imageData, size_t imageSize){
+    if (albumBuffer != nullptr) {
+      free(albumBuffer);
+    }
+    albumBuffer = imageData;
+    albumSize = imageSize;
+  }
+
+  void renderThumbnail(){
+    thumbnailSPR->createSprite(thumbnail.w, thumbnail.h);
+
+    if (albumBuffer != nullptr) {
+      thumbnailSPR->setColorDepth(16);
+      thumbnailSPR->setSwapBytes(true);
+      // Draw the JPEG at (0,0) inside the sprite
+      TJpgDec.drawJpg(0, 0, albumBuffer, albumSize);
+    } else {
+      // No art fetched yet — a quiet placeholder instead of a blank hole
+      fillBackground(thumbnailSPR, thumbnail.x, thumbnail.y);
+      thumbnailSPR->fillRoundRect(0, 0, thumbnail.w, thumbnail.h, UI_RADIUS_MD, UI_SURFACE);
+      thumbnailSPR->drawRoundRect(0, 0, thumbnail.w, thumbnail.h, UI_RADIUS_MD, UI_TEXT_GHOST);
+      uiIconPlaylist(thumbnailSPR, thumbnail.w / 2, thumbnail.h / 2, thumbnail.w / 2, thumbnail.h / 3, UI_TEXT_GHOST);
+    }
+
+    // Push the completed sprite to the physical screen
+    thumbnailSPR->pushSprite(thumbnail.x, thumbnail.y);
+    thumbnailSPR->deleteSprite();
+  }
 
   void renderSidebar() {
     if (!sidebarOpen) return;
 
     sidebarSPR->createSprite(sidebarD.w, sidebarD.h);
     
-    // Draw the background image FIRST, then draw the curved dark grey container on top
+    // Draw the background FIRST, then the panel on top of it
     fillBackground(sidebarSPR, sidebarD.x, sidebarD.y);
-    sidebarSPR->fillRoundRect(0, 0, sidebarD.w, sidebarD.h, 10, TFT_DARKGREY); 
-    
-    sidebarSPR->setTextColor(TFT_WHITE);
-    sidebarSPR->setTextDatum(MC_DATUM);
-    sidebarSPR->loadFont(BebasNeue_Regular21);
-    
-    // Draw temporary numbers 
+    sidebarSPR->fillRoundRect(0, 0, sidebarD.w, sidebarD.h, UI_RADIUS_LG, UI_SURFACE);
+    sidebarSPR->drawRoundRect(0, 0, sidebarD.w, sidebarD.h, UI_RADIUS_LG, UI_BORDER);
+
+    // These 3 slots map to the same 3 quick-launch apps selection() already
+    // routes to below (Clock / Links / Playlist) — same behaviour as
+    // before, just icons instead of bare "1 / 2 / 3" placeholders.
     for (int i = 0; i < 3; i++) {
-      if (i == sidebarSelection) {
-        sidebarSPR->fillRoundRect(10, 20 + (i * 70), 60, 60, 4, TFT_NAVY); // Highlight
+      int slotY = 20 + (i * 70);
+      int cy = slotY + 30;
+      int cx = sidebarD.w / 2;
+      bool active = (i == sidebarSelection);
+      uint16_t fg = active ? UI_ACCENT : UI_TEXT_MUTED;
+
+      if (active) {
+        sidebarSPR->fillRoundRect(10, slotY, 60, 60, UI_RADIUS_MD, UI_ACCENT_GLOW);
       } else {
-        sidebarSPR->fillRoundRect(10, 20 + (i * 70), 60, 60, 4, TFT_BLACK); 
+        sidebarSPR->drawRoundRect(10, slotY, 60, 60, UI_RADIUS_MD, UI_TEXT_GHOST);
       }
-      
-      char numStr[2];
-      sprintf(numStr, "%d", i + 1);
-      sidebarSPR->drawString(String(numStr), sidebarD.w / 2, 50 + (i * 70));
+
+      if (i == 0) uiIconClock(sidebarSPR, cx, cy, 15, fg);
+      else if (i == 1) uiIconLink(sidebarSPR, cx, cy, 15, fg);
+      else uiIconPlaylist(sidebarSPR, cx, cy, 26, 20, fg);
     }
     
     sidebarSPR->pushSprite(sidebarD.x, sidebarD.y);
@@ -376,6 +474,14 @@ class mediaEditor{
         renderProgressBar();
       }
     }
+
+    // Advance the title/artist marquees on their own faster tick so a
+    // scroll pass actually looks smooth rather than jumping once a second.
+    if (currentMillis - previousMarqueeMillis >= marqueeInterval) {
+      previousMarqueeMillis = currentMillis;
+      renderSongTitle();
+      renderArtist();
+    }
   }
 
   bool isSidebarOpen() { return sidebarOpen; }
@@ -384,9 +490,15 @@ class mediaEditor{
   bool hasActiveMedia() { return isTrackLoaded; }
   void clearActiveMedia() { isTrackLoaded = false; }
 
-  // Safely delete all pointers to prevent total system memory leak
+  // Delete all pointers to prevent memory leak
   void clearScreen() {
     sidebarOpen = false;
+    // Title/artist sprites are kept alive across frames (unlike this
+    // class's other, transient sprites) so the marquee can redraw ~16x/s
+    // without reallocating — free them here since every other sprite in
+    // this class already frees on the way out.
+    if (titleMarquee.spriteReady) { songTitleSPR->deleteSprite(); titleMarquee.spriteReady = false; }
+    if (artistMarquee.spriteReady) { artistSPR->deleteSprite(); artistMarquee.spriteReady = false; }
   }
 
 };

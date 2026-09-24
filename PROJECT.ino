@@ -2,6 +2,9 @@
 #include <TFT_eSPI.h>
 #include <ESP32Encoder.h> 
 #include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <TJpg_Decoder.h>
 #include <vector>
 #include "volumeHeader.h"
 #include "navigation.h"
@@ -14,8 +17,9 @@
 #include "mediaEditor.h"
 #include "secrets.h"
 #include "weatherApp.h"
-#include <NimBLEDevice.h>
-
+#include "bleManager.h"
+#include "theme.h"
+#include "mbedtls/base64.h"
 
   // Replace these with your actual Wi-Fi network and password
   const char* ssid       = SECRET_SSID;
@@ -45,236 +49,128 @@
   playlistApp playlist("Playlists");
   diagnosticsApp diagnostics("Diagnostics");
   weatherApp weather("Weather");
-
-  // Variables for iPhone pairing, including recognition as well as track data
-  static BLEUUID amsServiceUUID("89D3502B-0F36-433A-8EF4-C502AD55F8DC");    // standard string for AMS recognition
-
-  static uint16_t activeConnHandle = 0xFFFF;
-  static uint16_t amsStartHandle = 0;
-  static uint16_t amsEndHandle = 0;
-  static uint16_t entityUpdateHandle = 0;
-  static uint16_t remoteCmdHandle = 0;
-  static uint16_t cccdHandle = 0;
-
-  static int setupPhase = 0;
-  static bool actionComplete = false;
-  static bool amsDataUpdated = false;
-  static bool phoneDisconnected = false;
-
-  static String amsArtist = "";
-  static String amsTitle = "";
-  static int amsDuration = 0;
-  static float amsProgress = 0;
-  static String amsState = "";
   
   bool needDiagnostics = false;
-  static unsigned long phase1StartTime = 0;
 
-// This sends the commands that the user wants to execute to the iPhone
-int media_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error, struct ble_gatt_attr *attr, void *arg) {
-  if (error->status == 0) {
-    Serial.println("<<< iPhone Acknowledged Media Command! <<<");
-  } else {
-    Serial.print("--- ERROR: iPhone rejected command. Code: ");
-    Serial.println(error->status);
-  }
-  return 0;
+  const int MAX_ART_SIZE = 8192;
+  char artBuffer[MAX_ART_SIZE];
+  int artIndex = 0;
+
+bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
+  return mediaScreen.decodeArt(x, y, w, h, bitmap);
 }
 
-void sendMediaCommand(uint8_t commandID) {
-  if (remoteCmdHandle == 0 || activeConnHandle == 0xFFFF){
-    Serial.println("--- ERROR: Commands blocked ---");
-    return;
-  } 
-
-  int rc = ble_gattc_write_flat(activeConnHandle, remoteCmdHandle, &commandID, 1, media_write_cb, nullptr);
+void fetchAlbumArt(String artist, String title) {
+  WiFi.begin(ssid, password);
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    attempts++;
+  }
   
-  if (rc == 0) {
-    Serial.println("Media Command Dispatched (Waiting for iPhone receipt...)");
-  } else {
-    Serial.print("Failed to dispatch command. Local BLE code: ");
-    Serial.println(rc);
-  }
-}
+  if (WiFi.status() != WL_CONNECTED) return;
 
-// Executes after all call back functions have 
-int write_cb(uint16_t conn_handle, const struct ble_gatt_error *error, struct ble_gatt_attr *attr, void *arg) {
-  actionComplete = true;
-  return 0;
-}
+  WiFiClientSecure client;
+  client.setInsecure(); 
+  HTTPClient http;
 
-// Handles incoming notification, whether its an (un)successful connection, encryption is completed, or incoming pushed data 
-int custom_gap_cb(struct ble_gap_event *event, void *arg) {
-  if (event->type == BLE_GAP_EVENT_CONNECT) {                       // Checks if Doallinator is trying to connect
-    if (event->connect.status == 0) {                               // Checks that that the status is successful
-      activeConnHandle = event->connect.conn_handle;                // Stores the unique ID (handle) of this specific connection
-      NimBLEDevice::startSecurity(activeConnHandle);                // Requests a secure, encrypted connection
-    }
-  } else if (event->type == BLE_GAP_EVENT_DISCONNECT) {
-    activeConnHandle = 0xFFFF; 
-    setupPhase = 0;
-    phoneDisconnected = true;
-    NimBLEDevice::getAdvertising()->start();
-  } else if (event->type == BLE_GAP_EVENT_ENC_CHANGE) {             // Triggers when the security/encryption process finishes
-    if (event->enc_change.status == 0) {                            // Safety net, checks if the encryption was successful and updates global variables
-      setupPhase = 1;
-      phase1StartTime = millis();
-      actionComplete = true;
-    }
-  } else if (event->type == BLE_GAP_EVENT_NOTIFY_RX) {              // Triggers when iPhone pushes data 
-    if (event->notify_rx.attr_handle == entityUpdateHandle) {       // Checks if the pushed data characterized as media information from bluetooth
-      // Extracts data payload and stores the lenght of payload as well as a pointer
-      uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
-      uint8_t *data = OS_MBUF_DATA(event->notify_rx.om, uint8_t *);
+  String query = artist + "+" + title;
+  query.replace(" ", "+");
+  
+  String url = "https://itunes.apple.com/search?term=" + query + "&entity=song&limit=1";
+  
+  http.begin(client, url);
+  int httpCode = http.GET();
+  
+  if (httpCode == 200) {
+    String payload = http.getString();
+    
+    int urlStart = payload.indexOf("\"artworkUrl100\":\"");
+    if (urlStart != -1) {
+      urlStart += 17; 
+      int urlEnd = payload.indexOf("\"", urlStart);
+      String imageUrl = payload.substring(urlStart, urlEnd);
       
-      // First 3 bytes are headers. 
-      // First byte is the identity (Player Entity, Queue Entity, or Track Entity), specifies what the next byte of data is refferring to
-      // Second byte stores the actual data for the specified entity , for example under player entity this byte stores the app name and play state and volume
-      // Third byte is ignored in logic 
-      if (len >= 3) {
-        // Stores first two bytes
-        uint8_t entityID = data[0];                                 
-        uint8_t attributeID = data[1];
-        String value = "";
+      imageUrl.replace("100x100bb.jpg", "120x120bb.jpg");
+      
+      // Close the search request before reusing the client for the image.
+      // Calling begin() again while the previous connection is still open
+      // leaves it dangling and the second GET can fail outright.
+      http.end();
 
-        for (size_t i = 3; i < len; i++) value += (char)data[i];      // Stores data payload onto string
-        
-        // Stores the corresponding data that was transmitted only if we're under Track Entity id
-        // which contains artist name, song title, current time of song, etc
-        if (entityID == 2) {
-          if (attributeID == 0) amsArtist = value;
-          else if (attributeID == 2) amsTitle = value;
-          else if (attributeID == 3) amsDuration = value.toFloat();
-        }
+      http.begin(client, imageUrl);
+      int imgHttpCode = http.GET();
+      if (imgHttpCode == 200) {
+        int len = http.getSize();
+        if (len > 0) {
+          uint8_t* imgBuffer = (uint8_t*)malloc(len);
+          if (imgBuffer != nullptr) {
+            WiFiClient *imgClient = http.getStreamPtr();
+            int bytesRead = 0;
+            unsigned long lastByteTime = millis();
 
-        // Stores the state of song (paused vs playing)
-        else if (entityID == 0 && attributeID == 1) {
+            // The old loop had no timeout, so a server that went quiet
+            // while still "connected" hung the entire device.
+            while (bytesRead < len && millis() - lastByteTime < 5000) {
+              size_t avail = imgClient->available();
+              if (avail) {
+                // Never read past the end of the allocation: available()
+                // can report more than the space left, and readBytes()
+                // would walk straight off the end of the heap block.
+                if (avail > (size_t)(len - bytesRead)) avail = (size_t)(len - bytesRead);
+                int c = imgClient->readBytes(&imgBuffer[bytesRead], avail);
+                bytesRead += c;
+                lastByteTime = millis();
+              } else if (!imgClient->connected()) {
+                break;                          // hung up rather than stalled
+              } else {
+                delay(1);
+              }
+            }
 
-          // Creates substrings using commas as delimeters
-          int firstComma = value.indexOf(',');
-          int secondComma = value.indexOf(',', firstComma + 1);
-
-          // After passing safety check both the status of the song and how much time the user is into the song are stored in global variables
-          if (firstComma != -1 && secondComma != -1) {
-            String stateStr = value.substring(0, firstComma);
-            String elapsedStr = value.substring(secondComma + 1);
-            if (stateStr == "1") amsState = "Playing";
-            else amsState = "Paused";
-            amsProgress = elapsedStr.toFloat();
+            if (bytesRead == len) {
+              mediaScreen.setAlbumArt(imgBuffer, len);  // takes ownership
+            } else {
+              // A half-downloaded JPEG is worse than none, and the old code
+              // both fed it to the decoder and leaked it on the failure path.
+              free(imgBuffer);
+            }
           }
         }
-        amsDataUpdated = true;
       }
     }
   }
-  return 0;
-}
-
-int dsc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error, uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg) {
-
-  // Checks if a descriptor was successfully found without any connection errors
-  if (error->status == 0 && dsc != nullptr) {
-
-    // Ignores AMS 128 bit UUID and simply checks for the 16 bit
-    if (dsc->uuid.u.type == BLE_UUID_TYPE_16 && dsc->uuid.u16.value == 0x2902) {
-      // Safety check, ensuring handle hasn't already been found. Then stores the handle into a global variable
-      if (cccdHandle == 0) cccdHandle = dsc->handle;                                        
-    }
-    return 0;
-  }
-
-  // Checks if the ESP32 is done scanning all of the characteristics and marks the action as complete
-  if (error->status == BLE_HS_EDONE) {
-    actionComplete = true;
-    return 0;
-  }
-  return 0;
-}
-
-// Stores the "address" of where to send data from ESP32 to iPhone
-int chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error, const struct ble_gatt_chr *chr, void *arg) {
-
-  // Ensures the ESP32 successfully found a characteristic without any connection errors
-  if (error->status == 0 && chr != nullptr) {
-    // Convert UUID to readable uppercased string
-    char uuid_str[37];
-    ble_uuid_to_str(&(chr->uuid.u), uuid_str);
-    String foundStr = String(uuid_str);
-    foundStr.toUpperCase();
-    
-    Serial.print("Scanned Characteristic: ");
-    Serial.println(foundStr);
-    
-    // Stores the listening and writing UUID
-    if (foundStr.indexOf("2F7CABCE") != -1) {
-      entityUpdateHandle = chr->val_handle;
-      Serial.println(">>> SAVED Entity Update Handle <<<");
-    }
-    else if (foundStr.indexOf("9B3C81D8") != -1) {
-      remoteCmdHandle = chr->val_handle;
-      Serial.println(">>> SAVED Remote Command Handle <<<");
-    }
-    return 0;
-  }
-
-  // Checks if the ESP32 is done scanning all of the characteristics and marks the action as complete
-  if (error->status == BLE_HS_EDONE) {
-    actionComplete = true;
-    return 0;
-  }
-  return 0;
-}
-
-// Stores UUID and pointers to the start and end of the handle
-int gattc_cb(uint16_t conn_handle, const struct ble_gatt_error *error, const struct ble_gatt_svc *service, void *arg) {
-  // Ensures the ESP32 successfully found a service without any connection errors
-  if (error->status == 0 && service != nullptr) {
-    // Extracts UUID of the discovered service through service->uuid.u, converts it into a string, and creates a NimBLEUUID object for easy comparison
-    char uuid_str[37];
-    ble_uuid_to_str(&(service->uuid.u), uuid_str);
-    NimBLEUUID foundSvc(uuid_str);
-    
-    // Checks for a match and stores values to global variables
-    if (foundSvc.equals(amsServiceUUID)) {
-      amsStartHandle = service->start_handle;
-      amsEndHandle = service->end_handle;
-    }
-    return 0;
-  }
-
-  // Checks if the ESP32 is done scanning all of the information and marks the action as complete
-  if (error->status == BLE_HS_EDONE) {
-    actionComplete = true;
-    return 0;
-  }
-  return 0;
+  http.end();
+  
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
 }
 
 void setup() {
+  Serial.setRxBufferSize(1024);
   Serial.begin(115200);
   tft.init();
   tft.setRotation(3);
   tft.fillScreen(TFT_BLACK);
   tft.setSwapBytes(true);
 
-  NimBLEDevice::init("Testing-AMS");                                                        // Boots up the underlying NimBLE host stack and assigns an internal name.
-  NimBLEDevice::setCustomGapHandler(custom_gap_cb);                                         // Registers custom_gap_cb into NimBLE library
-  NimBLEDevice::setSecurityAuth(true, false, true);                                         // Enables bonding (meaning paired devices will remember each other in the future), disbales MITM, enables LE Secure connections 
-  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);                                // Prohibits input or output capabilties, directly disabling the need to input a PIN for added security
-  NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);             // Sets the keys that the initiator will receive or accept
-  NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);             // Sets the keys that the responsed will receive or accept
-  NimBLEDevice::setPower(ESP_PWR_LVL_P9);                                                   // Sets the bluetooth transmission power on ESP32 to max level
-  NimBLEDevice::setMTU(512);
+  setupBLE();
 
-  NimBLEAdvertising* pAdv = NimBLEDevice::getAdvertising();                                         // Stores pointer to internal advertising object
-  pAdv->setName("Testing-AMS");                                                                     // Registers public name  
-  pAdv->start();                                                                                    // Starts broadcasting
+  TJpgDec.setJpgScale(1);
+  TJpgDec.setSwapBytes(false);
+  TJpgDec.setCallback(tft_output);
 
   // --- LOADING SCREEN ---
-  tft.pushImage(0, 0, 320, 240, mainBackground);
+  tft.fillScreen(UI_BG);
   tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("Connecting to Wi-Fi...", 160, 120, 4); // Draw a simple message
+  tft.loadFont(FONT_HERO_LG);
+  tft.setTextColor(UI_ACCENT);
+  tft.drawString("DO-ALL-INATOR", 160, 96);
+  tft.unloadFont();
+  tft.loadFont(FONT_UI_SM);
+  tft.setTextColor(UI_TEXT_MUTED);
+  tft.drawString("Connecting to Wi-Fi...", 160, 140);
+  tft.unloadFont();
 
   // --- WI-FI & TIME SYNC FIX ---
   WiFi.begin(ssid, password);
@@ -301,6 +197,16 @@ void setup() {
       // Optional: Print a message to the Serial monitor if it failed
       Serial.println("Wi-Fi Connection Failed. Clock will be incorrect.");
   }
+
+  // Brief on-screen confirmation of the result before handing off to the
+  // menu, so a failed connection isn't silently invisible to the user.
+  tft.loadFont(FONT_UI_SM);
+  tft.setTextDatum(MC_DATUM);
+  tft.fillRect(0, 128, 320, 24, UI_BG);
+  tft.setTextColor(WiFi.status() == WL_CONNECTED ? UI_GOOD : UI_BAD);
+  tft.drawString(WiFi.status() == WL_CONNECTED ? "Wi-Fi Connected" : "Wi-Fi Unavailable", 160, 140);
+  tft.unloadFont();
+  delay(600);
   
   // Safely turn off Wi-Fi
   WiFi.disconnect(true);
@@ -308,7 +214,7 @@ void setup() {
   // -----------------------------
 
   // Re-draw the background to erase the loading message
-  tft.pushImage(0, 0, 320, 240, mainBackground); 
+  tft.fillScreen(UI_BG); 
 
   menuObject.setup(appsInfo.getNamesList());
   vol.setupSprite();
@@ -324,7 +230,7 @@ int currentMode = 0;  // 1 = clock app   2 = links app   3 = playlist app   4 = 
 void handleSerialInput() {
   if (Serial.available() == 0) return; 
 
-  char incomingMsg[512];
+  char incomingMsg[1024];
   size_t len = Serial.readBytesUntil('\n', incomingMsg, sizeof(incomingMsg) - 1);
   incomingMsg[len] = '\0';
   
@@ -337,6 +243,9 @@ void handleSerialInput() {
   if (!command) return;
 
   if (strcmp(command, "MEDIA") == 0) {
+    artIndex = 0;
+    artBuffer[0] = '\0';
+
     char* songName = strtok(NULL, "|");
     char* artistName = strtok(NULL, "|");
     char* progressSecStr = strtok(NULL, "|");
@@ -354,7 +263,7 @@ void handleSerialInput() {
         if (currentMode == 1) clockApp.clearScreen(); 
         if (currentMode == 3) playlist.clearScreen(); 
         
-        tft.pushImage(0, 0, 320, 240, mainBackground);
+        tft.fillScreen(TFT_BLACK);
         currentMode = 4;
         mediaScreen.render(); 
       } 
@@ -362,16 +271,6 @@ void handleSerialInput() {
       else if (currentMode == 4) {
         mediaScreen.render();
       }
-    }
-  } 
-  else if (strcmp(command, "IDLE") == 0) {
-    mediaScreen.clearActiveMedia(); // Erase the active flag
-    
-    if (currentMode == 4) {
-      mediaScreen.clearScreen();
-      tft.pushImage(0, 0, 320, 240, mainBackground);
-      menuObject.setup(appsInfo.getNamesList());
-      currentMode = 0;
     }
   } else if (strcmp(command, "DIAG") == 0 && needDiagnostics) {
     char* cpuStr = strtok(NULL, "|");
@@ -392,9 +291,12 @@ void handleSerialInput() {
       String currentCondition = String(currentConditionStr);
       int currentTemp = atoi(currentTempStr);
 
-      // Declare arrays to store data for all times after the current time
+      // Declare arrays to store data for all times after the current time.
+      // temperatures[] is zero-initialised: a short payload used to leave
+      // uninitialised stack values in the unfilled slots, and all 8 were
+      // handed to the weather app regardless of how many actually parsed.
       String conditions[8];
-      int temperatures[8];
+      int temperatures[8] = {0};
       String times[8];
 
       int dataStorageIndex = 0;
@@ -413,12 +315,68 @@ void handleSerialInput() {
           if (dataStorageIndex >= 8) break;
         }
       }
-      weather.updateData(times, temperatures, conditions, 8);
+      // Pass how many hours actually arrived, not a hard-coded 8.
+      weather.updateData(times, temperatures, conditions, dataStorageIndex);
+    }
+  } else if (strcmp(command, "VOLUME") == 0) {
+    // Lets a connected PC report its actual system volume so the bar
+    // reflects reality instead of only ever tracking the encoder's own
+    // raw position. Expected format: "VOLUME|<0-100>", e.g. "VOLUME|75".
+    // NOTE: this is a new command this sketch didn't previously handle —
+    // the PC-side companion app needs to actually send it for this to
+    // do anything; adjust the format here to match if it already sends
+    // volume some other way.
+    char* volStr = strtok(NULL, "|");
+    if (volStr) {
+      vol.updateHostVolume(atoi(volStr));
+    }
+  } else if (strcmp(command, "ART") == 0) {
+    char* chunk = incomingMsg + 4;
+    int chunkLen = strlen(chunk);
+    
+    // Prevent buffer overflows by ensuring the chunk fits in the array
+    if (artIndex + chunkLen < MAX_ART_SIZE) {
+      strcpy(artBuffer + artIndex, chunk);
+      artIndex += chunkLen;
+    }
+  } else if (strcmp(command, "ART_END") == 0) {
+    if (artIndex > 0) {
+      size_t outputLen = 0;
+      unsigned char* decodedData = (unsigned char*)malloc(artIndex);
+      
+      if (decodedData != nullptr) {
+        int err = mbedtls_base64_decode(decodedData, artIndex, &outputLen, (const unsigned char*)artBuffer, artIndex);
+        
+        if (err == 0 && outputLen > 4 && decodedData[0] == 0xFF && decodedData[1] == 0xD8 && decodedData[outputLen-2] == 0xFF && decodedData[outputLen-1] == 0xD9) {
+          mediaScreen.setAlbumArt(decodedData, outputLen);
+          
+          if (currentMode == 4) {
+            mediaScreen.render();
+          }
+        } else {
+          free(decodedData);
+        }
+      }
+      
+      artIndex = 0; 
+      artBuffer[0] = '\0'; 
+    }
+  } else if (strcmp(command, "IDLE") == 0) {
+    mediaScreen.clearActiveMedia(); 
+    mediaScreen.setAlbumArt(nullptr, 0); 
+    
+    if (currentMode == 4) {
+      mediaScreen.clearScreen();
+      tft.fillScreen(TFT_BLACK);
+      menuObject.setup(appsInfo.getNamesList());
+      currentMode = 0;
     }
   }
 }
 
 void loop() {
+  static String lastTrack = "";
+
 // --- IPHONE MODE ---
   // Resets connetion status, clears media data sprites and resets back to menu screen
   if (phoneDisconnected) {
@@ -426,7 +384,7 @@ void loop() {
     mediaScreen.clearActiveMedia();
     if (currentMode == 4) {
       mediaScreen.clearScreen();
-      tft.pushImage(0, 0, 320, 240, mainBackground);
+      tft.fillScreen(TFT_BLACK);
       menuObject.setup(appsInfo.getNamesList());
       currentMode = 0;
     }
@@ -442,78 +400,22 @@ void loop() {
       if (currentMode == 1) clockApp.clearScreen(); 
       if (currentMode == 3) playlist.clearScreen(); 
       
-      tft.pushImage(0, 0, 320, 240, mainBackground);
+      tft.fillScreen(TFT_BLACK);
       currentMode = 4;
       mediaScreen.render(); 
     } 
     else if (currentMode == 4) {
       mediaScreen.render();
     }
-  }
 
-  // State machine that executes the required steps to fully subscribe to the iPhone's media notifications
-  if (actionComplete) {
-    if (setupPhase == 1 && (millis() - phase1StartTime < 2000)) {
-      // Non-blocking wait: let the loop continue running while we wait 2 seconds
-    } else {
-      actionComplete = false;
-      
-      // Waits for 2000 milliseconds to ensure the newly established BLE connection is stable, advances the phase to 2, and asks the NimBLE stack to discover all available services on the iPhone
-      if (setupPhase == 1) {
-        setupPhase = 2;
-        ble_gattc_disc_all_svcs(activeConnHandle, gattc_cb, nullptr);
-      } 
-      // Checks if the AMS was successfully found by verifying amsStartHandle is not zero
-      // If found, it advances to phase 3 and asks the stack to discover all characteristics strictly within the start and end handles of that specific service
-      else if (setupPhase == 2) {
-        if (amsStartHandle != 0) {
-          setupPhase = 3;
-          ble_gattc_disc_all_chrs(activeConnHandle, amsStartHandle, amsEndHandle, chr_disc_cb, nullptr);
-        }
-      }
-      // Checks if the "Entity Update" characteristic was successfully found. If found, it advances to phase 4 and requests the discovery of all descriptors attached to it
-      else if (setupPhase == 3) {
-        if (entityUpdateHandle != 0) {
-          setupPhase = 4;
-          ble_gattc_disc_all_dscs(activeConnHandle, entityUpdateHandle, amsEndHandle, dsc_disc_cb, nullptr);
-        }
-      }
-      // Checks if CCCD was found. It advances to phase 5 and writes a byte array to CCCD
-      // This is the universal BLE command that tells the iPhone to turn on notifications. Checks for failures (rc != 0), it resets the actionComplete flag to true so the loop will try again
-      else if (setupPhase == 4) {
-        if (cccdHandle != 0) {
-          setupPhase = 5;
-          uint8_t cccd_val[] = {0x01, 0x00};
-          int rc = ble_gattc_write_flat(activeConnHandle, cccdHandle, cccd_val, sizeof(cccd_val), write_cb, (void*)4);
-          if (rc != 0) actionComplete = true;
-        }
-      }
-      // Advances to phase 6 and writes {2, 0, 1, 2, 3} to the Entity Update characteristic
-      // Which according to AMS specification, Entity ID 2 represents the "Track"
-      // This specific byte array commands the iPhone to notify the ESP32 whenever the track's Artist (0), Album (1), Title (2), or Duration (3) changes
-      else if (setupPhase == 5) {
-        setupPhase = 6;
-        uint8_t trackCmd[] = {2, 0, 1, 2, 3};
-        int rc = ble_gattc_write_flat(activeConnHandle, entityUpdateHandle, trackCmd, sizeof(trackCmd), write_cb, (void*)5);
-        if (rc != 0) actionComplete = true;
-      }
-      // Advances to phase 7 and writes {0, 1} to the Entity Update characteristic. Entity ID 0 represents the "Media Player"
-      // This specific command tells the iPhone to notify the ESP32 whenever the playback state changes, such as when a song is paused or playing
-      else if (setupPhase == 6) {
-        setupPhase = 7;
-        uint8_t playerCmd[] = {0, 1};
-        int rc = ble_gattc_write_flat(activeConnHandle, entityUpdateHandle, playerCmd, sizeof(playerCmd), write_cb, (void*)6);
-        if (rc != 0) actionComplete = true;
-      }
-      // The setup process is fully complete, so it resets the setupPhase variable back to 0. The ESP32 is now passively waiting to receive pushed data
-      else if (setupPhase == 7) {
-        setupPhase = 0; 
-      }
+    if (amsTitle != lastTrack && amsTitle != "") {
+      lastTrack = amsTitle;
+      fetchAlbumArt(amsArtist, amsTitle);
     }
   }
 
-  vol.calculateVolume(encoder.getCount() / 2);
-  
+  runBLEStateMachine();
+
   int buttonPressed = navigator.navigate();
   int clickState = navigator.checkClick(rotaryEncoderButton); 
 
@@ -527,7 +429,7 @@ void loop() {
     else if (currentMode == 5) diagnostics.clearScreen();
     else if (currentMode == 6) weather.clearScreen();
 
-    tft.pushImage(0, 0, 320, 240, mainBackground);
+    tft.fillScreen(TFT_BLACK);
     
     // ROUTING LOGIC
     if (mediaScreen.hasActiveMedia() && currentMode != 4) {
@@ -560,7 +462,7 @@ void loop() {
         
         // Free the Media Editor's RAM and wipe the screen
         mediaScreen.clearScreen();
-        tft.pushImage(0, 0, 320, 240, mainBackground);
+        tft.fillScreen(TFT_BLACK);
         
         // Load the newly selected internal app
         if (appToLaunch == 0) {
@@ -707,5 +609,37 @@ void loop() {
       weather.scroll(buttonPressed);
     }
     weather.run(); // Currently does nothing, in the future it will load the icons corresponding to each hour
+  }
+
+// --- VOLUME OVERLAY ---
+  // Composited LAST, after the active app has taken its turn to draw. It
+  // used to run at the top of loop(), so a menu scroll or a marquee tick
+  // painted straight over the bar a fraction of a second later.
+  //
+  // Takes the raw encoder count (the divide by two now happens inside the
+  // class, where it can be floored instead of truncated toward zero), and
+  // returns true for exactly one frame: the moment the bar has finished
+  // sliding away and wiped its own column. That is the app's cue to repaint.
+  if (vol.update(encoder.getCount())) {
+    switch (currentMode) {
+      case 0: menuObject.renderMenu(); break;
+      case 1: clockApp.loadSprites(); break;
+      case 2: links.renderSelectionScreen(); break;
+      case 3: playlist.renderSelectionScreen(); break;
+      case 4: mediaScreen.render(); break;
+
+      // Was diagnostics.loadScreen(), which resets the tab back to CPU and
+      // wipes the whole screen — so nudging the volume while reading the
+      // Wi-Fi tab threw you back to CPU and strobed the display.
+      case 5: diagnostics.redraw(); break;
+
+      case 6:
+        if (weather.isDataLoaded()) {
+          weather.updateUI();
+        } else {
+          weather.loadScreen(); // Keep the "Collecting Data..." screen alive
+        }
+        break;
+    }
   }
 }

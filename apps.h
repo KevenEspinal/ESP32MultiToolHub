@@ -1,7 +1,14 @@
 #pragma once
 #include <TFT_eSPI.h>
 #include <vector>
-#include "background.h" 
+#include "background.h"
+#include "theme.h"
+
+extern TFT_eSPI tft; // NOTE: every sibling app header declares this; it was
+                      // missing here, which meant loadScreen() below could
+                      // not actually see `tft`. Added to match the rest of
+                      // the project (no behaviour change, just makes the
+                      // existing code buildable).
 
 class app{
   private:
@@ -25,10 +32,8 @@ class app{
     return namesList;
   }
   void loadScreen(){
-    // Use same background as menu (temporary)
-    tft.fillScreen(TFT_BLACK);
     tft.setSwapBytes(true);
-    tft.pushImage(0, 0, 320, 240, mainBackground);
+    tft.fillScreen(UI_BG);
   }
 };
 int app::totalNumApps = 0;
